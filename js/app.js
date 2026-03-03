@@ -95,6 +95,7 @@ class TomarApp {
         this.tabManager = new TabManager(this);
         this.pdfManager = new PDFManager(this);
         this.exportManager = new ExportManager(this);
+        this.tomFileManager = new TomFileManager(this);
         this.timerTool = new TimerTool(this);
         this.templateManager = new TemplateManager(this);
         this.currentMousePos = { x: 0, y: 0 };
@@ -765,6 +766,16 @@ class TomarApp {
                 if (!e.target.closest('.app-menu-container')) {
                     dropdown.classList.remove('show');
                 }
+            });
+
+            // .tom Aç / Kaydet
+            document.getElementById('menuOpenTom')?.addEventListener('click', () => {
+                this.tomFileManager.openTomFile();
+                dropdown.classList.remove('show');
+            });
+            document.getElementById('menuSaveTom')?.addEventListener('click', () => {
+                this.tomFileManager.saveAsTom();
+                dropdown.classList.remove('show');
             });
 
             // Export Actions

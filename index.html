@@ -22,6 +22,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <!-- jsPDF for PDF export -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <!-- pako for .tom file format (gzip compression) -->
+    <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 </head>
 
 <body>
@@ -155,6 +157,7 @@
                     </button>
                 </div>
                 <input type="file" id="pdfInput" accept="application/pdf" style="display: none;">
+                <input type="file" id="tomInput" accept=".tom" style="display: none;">
             </header>
 
             <!-- Storage Permission Alert Banner -->
@@ -1199,6 +1202,15 @@
             <span>Güncelleme Hazır</span>
         </div>
         <div class="menu-separator" id="menuUpdateSeparator" style="display: none;"></div>
+        <div class="menu-item" id="menuOpenTom">
+            <img src="assets/icons/pages.svg" class="icon-small">
+            <span>Tomar Dosyası Aç (.tom)</span>
+        </div>
+        <div class="menu-item" id="menuSaveTom">
+            <img src="assets/icons/save.svg" class="icon-small">
+            <span>Tomar Olarak Kaydet (.tom)</span>
+        </div>
+        <div class="menu-separator"></div>
         <div class="menu-item" id="menuSave">
             <img src="assets/icons/save.svg" class="icon-small">
             <span>Kaydet</span>
@@ -1322,14 +1334,16 @@
                 <button class="template-modal-close" id="btnCloseStorageSettingsModal"
                     style="background: none; border: none; font-size: 24px; cursor: pointer;">×</button>
             </div>
-            <div class="sidebar-content" style="padding: 24px; overflow-y: auto;">
-                <div class="form-group">
-                    <p style="font-size: 13px; color: #666; line-height: 1.5; margin-bottom: 20px;">
-                        Notlarınızın bilgisayarınızda saklanacağı klasörü seçin. Bu sayede verileriniz tarayıcı
-                        limitlerine takılmadan güvenle saklanır.
-                    </p>
+            <div class="sidebar-content"
+                style="padding: 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 0;">
 
-                    <div class="storage-status-card" style="margin-bottom: 24px;">
+                <!-- ── Bölüm 1: Yerel Klasör (Masaüstü / Android) ── -->
+                <div class="form-group" id="local-storage-section">
+                    <p
+                        style="font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #999; margin-bottom: 12px;">
+                        💾 Yerel Depolama</p>
+
+                    <div class="storage-status-card" style="margin-bottom: 16px;">
                         <div class="status-icon">📂</div>
                         <div class="status-info">
                             <div class="status-label">Mevcut Durum</div>
@@ -1337,24 +1351,80 @@
                         </div>
                     </div>
 
-                    <div style="display: flex; flex-direction: column; gap: 12px;">
+                    <div style="display: flex; flex-direction: column; gap: 10px;">
                         <button id="btnChangeStorageLocation" class="btn btn-primary"
-                            style="justify-content: center; height: 45px;">
+                            style="justify-content: center; height: 42px;">
                             <img src="assets/icons/folder.svg"
                                 style="width: 16px; margin-right: 8px; filter: brightness(0) invert(1);">
                             Yerel Klasör Seç veya Oluştur
                         </button>
                         <button id="btnResetStorageLocation" class="btn btn-secondary"
-                            style="justify-content: center; height: 45px;">
+                            style="justify-content: center; height: 38px; font-size: 13px;">
                             Sıfırla (Tarayıcıya Dön)
                         </button>
                     </div>
 
                     <p id="folderPickerSupportNote"
-                        style="font-size: 11px; color: #fa5252; margin-top: 12px; display: none; text-align: center;">
+                        style="font-size: 11px; color: #fa5252; margin-top: 10px; display: none; text-align: center;">
                         ⚠️ Tarayıcınız yerel klasör erişimini desteklemiyor.
                     </p>
                 </div>
+
+                <!-- ── Bölüm 2: Google Drive (Tüm Platformlar) ── -->
+                <div id="gdrive-storage-section"
+                    style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 20px;">
+
+                    <p
+                        style="font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #999; margin-bottom: 12px;">
+                        ☁️ Google Drive Senkronizasyonu</p>
+                    <p style="font-size: 12px; color: #888; margin-bottom: 14px; line-height: 1.5;">
+                        Notlarınızı Google Drive'a yedekleyin veya farklı cihazlardan erişin.
+                    </p>
+
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <button id="btn-gdrive-save" class="btn btn-secondary"
+                            style="justify-content: center; height: 42px; font-size: 13px; gap: 8px;">
+                            <img src="https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg"
+                                width="16" style="vertical-align: middle; margin-right: 6px;">
+                            Google Drive'a Kaydet
+                        </button>
+                        <button id="btn-gdrive-load" class="btn btn-secondary"
+                            style="justify-content: center; height: 42px; font-size: 13px; gap: 8px;">
+                            <img src="https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg"
+                                width="16" style="vertical-align: middle; margin-right: 6px;">
+                            Google Drive'dan Yükle
+                        </button>
+                        <button id="btn-gdrive-signout" class="btn"
+                            style="justify-content: center; height: 34px; font-size: 11px; color: #aaa; background: none; border: 1px solid #eee; display: none;">
+                            Google hesabından çıkış yap
+                        </button>
+                    </div>
+                    <p id="gdrive-status" style="font-size: 12px; color: #555; margin-top: 10px; min-height: 18px;"></p>
+                </div>
+
+                <!-- ── Bölüm 3: JSON Yedek (Sadece Mobil) ── -->
+                <div id="mobile-storage-section"
+                    style="display: none; margin-top: 20px; border-top: 1px solid #eee; padding-top: 20px;">
+
+                    <p
+                        style="font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #999; margin-bottom: 12px;">
+                        📁 Dosya Yedekleme</p>
+                    <p style="font-size: 12px; color: #888; margin-bottom: 14px; line-height: 1.5;">
+                        JSON dosyası olarak indirip Dosyalar uygulaması → iCloud Drive'a taşıyabilirsiniz.
+                    </p>
+
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <button id="btn-export-json" class="btn btn-secondary"
+                            style="justify-content: center; height: 42px; font-size: 13px;">
+                            ⬇️ Dosya Olarak İndir (.json)
+                        </button>
+                        <button id="btn-import-json" class="btn btn-secondary"
+                            style="justify-content: center; height: 42px; font-size: 13px;">
+                            ⬆️ Dosyadan Yükle (.json)
+                        </button>
+                    </div>
+                </div>
+
             </div>
             <div class="form-actions"
                 style="padding: 20px; border-top: 1px solid #eee; display: flex; justify-content: flex-end;">
@@ -1387,6 +1457,7 @@
     <script src="./js/pdfTextSelector.js"></script>
     <script src="./js/PDFManager.js?v=0.7.3"></script>
     <script src="./js/ExportManager.js?v=0.7.3"></script>
+    <script src="./js/TomFileManager.js?v=0.7.3"></script>
     <script src="./js/PageManager.js?v=0.7.3"></script>
     <script src="./js/Dashboard.js?v=0.7.3"></script>
     <script src="./js/TableTool.js?v=0.7.3"></script>
@@ -1407,6 +1478,7 @@
     <script src="./templates/isometric-grid.js?v=0.7.3"></script>
     <script src="./templates/meeting-notes.js?v=0.7.3"></script>
     <script src="./js/TemplateManager.js?v=0.7.3"></script>
+    <script src="./js/CloudStorageManager.js?v=0.7.3"></script>
     <script src="./js/app.js?v=0.7.3"></script>
     <!-- PWA Güncelleme Tanımları -->
     <script src="./js/pwa-updates.js?v=0.7.3"></script>

@@ -862,6 +862,11 @@ class Dashboard {
 
         if (!btnStorage || !modal) return;
 
+        // ─── CloudStorageManager başlat ───────────────────────────
+        if (window.CloudStorageManager && !this._cloudStorage) {
+            this._cloudStorage = new window.CloudStorageManager(this);
+        }
+
         const updateStatusUI = () => {
             const mode = window.fileSystemManager.mode;
             const hasDir = !!window.fileSystemManager.dirHandle;
@@ -874,7 +879,7 @@ class Dashboard {
             } else if (mode === 'native' && hasStored) {
                 statusText.innerHTML = `Mevcut Konum: <strong style="color: #f08c00">İzin Bekleniyor (${window.fileSystemManager.storedHandle.name})</strong>`;
                 btnPick.textContent = 'Erişime İzin Ver';
-                btnPick.className = 'btn btn-warning'; // Yellowish to indicate action needed
+                btnPick.className = 'btn btn-warning';
             } else if (mode === 'native') {
                 statusText.innerHTML = `Mevcut Konum: <strong>Tarayıcı Depolaması</strong>`;
                 btnPick.textContent = 'Yerel Klasör Seç veya Oluştur';
@@ -884,9 +889,20 @@ class Dashboard {
                 btnPick.style.display = 'none';
             }
 
-            // Highligh support note for non-chromium
+            // Support note for non-chromium
             const supportNote = document.getElementById('folderPickerSupportNote');
             if (supportNote) supportNote.style.display = (mode === 'indexeddb') ? 'block' : 'none';
+
+            // ─── Mobil bölümünü göster/gizle ─────────────────────
+            const mobileSection = document.getElementById('mobile-storage-section');
+            if (mobileSection) {
+                const platform = window.CloudStorageManager ? window.CloudStorageManager.detect() : { isMobile: false, hasFileSystem: true };
+                if (platform.isMobile || !platform.hasFileSystem) {
+                    mobileSection.style.display = 'block';
+                } else {
+                    mobileSection.style.display = 'none';
+                }
+            }
         };
 
         btnStorage.onclick = () => {
@@ -912,7 +928,6 @@ class Dashboard {
             const success = await window.fileSystemManager.pickStorageFolder();
             if (success) {
                 updateStatusUI();
-                // Reload data from new folder
                 this.initAsync();
             }
         };
@@ -926,6 +941,110 @@ class Dashboard {
                 this.initAsync();
             }
         };
+
+        // ─── Mobil Yedekleme Butonları ────────────────────────────
+        this._setupMobileStorageButtons();
+    }
+
+    _setupMobileStorageButtons() {
+        const statusEl = document.getElementById('gdrive-status');
+        const setStatus = (msg, isError = false) => {
+            if (!statusEl) return;
+            statusEl.textContent = msg;
+            statusEl.style.color = isError ? '#fa5252' : '#2b8a3e';
+        };
+
+        const getCloud = () => {
+            if (!this._cloudStorage && window.CloudStorageManager) {
+                this._cloudStorage = new window.CloudStorageManager(this);
+            }
+            return this._cloudStorage;
+        };
+
+        // ─── JSON İndir ───────────────────────────────────────────
+        const btnExport = document.getElementById('btn-export-json');
+        if (btnExport) {
+            btnExport.onclick = async () => {
+                btnExport.disabled = true;
+                btnExport.textContent = '⏳ Hazırlanıyor...';
+                const result = await getCloud().exportToFile();
+                btnExport.disabled = false;
+                btnExport.innerHTML = '⬇️ Dosya Olarak İndir (.json)';
+                alert(result.message);
+            };
+        }
+
+        // ─── JSON Yükle ───────────────────────────────────────────
+        const btnImport = document.getElementById('btn-import-json');
+        if (btnImport) {
+            btnImport.onclick = async () => {
+                const result = await getCloud().importFromFile();
+                if (result.success) {
+                    alert(result.message);
+                    await this.initAsync();
+                } else if (result.message) {
+                    alert('Hata: ' + result.message);
+                }
+            };
+        }
+
+        // ─── Google Drive: Kaydet ─────────────────────────────────
+        const btnGDriveSave = document.getElementById('btn-gdrive-save');
+        if (btnGDriveSave) {
+            btnGDriveSave.onclick = async () => {
+                setStatus('⏳ Kaydediliyor...');
+                btnGDriveSave.disabled = true;
+                try {
+                    const result = await getCloud().saveToGoogleDrive();
+                    setStatus('✅ ' + result.message);
+                    // Google oturumu açıksa çıkış butonunu göster
+                    const signOutBtn = document.getElementById('btn-gdrive-signout');
+                    if (signOutBtn) signOutBtn.style.display = 'flex';
+                } catch (e) {
+                    setStatus('❌ ' + e.message, true);
+                }
+                btnGDriveSave.disabled = false;
+            };
+        }
+
+        // ─── Google Drive: Yükle ──────────────────────────────────
+        const btnGDriveLoad = document.getElementById('btn-gdrive-load');
+        if (btnGDriveLoad) {
+            btnGDriveLoad.onclick = async () => {
+                setStatus('⏳ Yükleniyor...');
+                btnGDriveLoad.disabled = true;
+                try {
+                    const result = await getCloud().loadFromGoogleDrive();
+                    if (result.success) {
+                        setStatus('✅ ' + result.message);
+                        const signOutBtn = document.getElementById('btn-gdrive-signout');
+                        if (signOutBtn) signOutBtn.style.display = 'flex';
+                        setTimeout(async () => {
+                            await this.initAsync();
+                        }, 1500);
+                    } else {
+                        setStatus('ℹ️ ' + result.message);
+                    }
+                } catch (e) {
+                    setStatus('❌ ' + e.message, true);
+                }
+                btnGDriveLoad.disabled = false;
+            };
+        }
+
+        // ─── Google Drive: Çıkış ──────────────────────────────────
+        const btnSignOut = document.getElementById('btn-gdrive-signout');
+        if (btnSignOut) {
+            // Eğer token kayıtlıysa göster
+            if (localStorage.getItem('tomar_gdrive_token')) {
+                btnSignOut.style.display = 'flex';
+            }
+            btnSignOut.onclick = async () => {
+                await getCloud().signOutGoogle();
+                btnSignOut.style.display = 'none';
+                setStatus('Google hesabından çıkış yapıldı.');
+            };
+        }
     }
 
     renameFolder(id, newName) {
