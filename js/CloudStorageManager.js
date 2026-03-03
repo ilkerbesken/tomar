@@ -8,7 +8,7 @@ class CloudStorageManager {
     constructor(app) {
         this.app = app;
         this.GOOGLE_CLIENT_ID = '915367935470-6ok8pt4dhr4thmmf4g4n2v112tksehds.apps.googleusercontent.com';
-        this.GOOGLE_SCOPES = 'https://www.googleapis.com/auth/drive.appdata';
+        this.GOOGLE_SCOPES = 'https://www.googleapis.com/auth/drive.file';
         this.gisLoaded = false;
         this.gdriveToken = null;
 
@@ -140,17 +140,17 @@ class CloudStorageManager {
     async saveToGoogleDrive() {
         await this._ensureToken();
 
+        const folderId = await this._getOrCreateTomarFolder();
         const data = await this._collectAllData();
         const json = JSON.stringify(data);
         const fileName = 'tomar-notlar.json';
 
-        // Varolan dosyayı bul
+        // Tomar klasörü içindeki varolan dosyayı bul
         const searchRes = await fetch(
-            `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D'${fileName}'&fields=files(id,name)`,
+            `https://www.googleapis.com/drive/v3/files?q=name%3D'${fileName}'+and+'${folderId}'+in+parents+and+trashed%3Dfalse&fields=files(id,name)`,
             { headers: { Authorization: `Bearer ${this.gdriveToken}` } }
         );
         if (!searchRes.ok) {
-            // Token expire olmuş olabilir — temizle ve tekrar dene
             this.gdriveToken = null;
             localStorage.removeItem('tomar_gdrive_token');
             throw new Error('Google Drive bağlantısı kesildi. Lütfen tekrar deneyin.');
@@ -158,10 +158,9 @@ class CloudStorageManager {
         const searchData = await searchRes.json();
         const existingFile = searchData.files?.[0];
 
-        const metadata = {
-            name: fileName,
-            ...(existingFile ? {} : { parents: ['appDataFolder'] })
-        };
+        const metadata = existingFile
+            ? { name: fileName }
+            : { name: fileName, parents: [folderId] };
 
         const blob = new Blob([json], { type: 'application/json' });
         const form = new FormData();
@@ -185,16 +184,17 @@ class CloudStorageManager {
             throw new Error(`Google Drive kayıt hatası: ${errText}`);
         }
 
-        return { success: true, message: 'Google Drive\'a kaydedildi!' };
+        return { success: true, message: 'Google Drive / Tomar klasörüne kaydedildi!' };
     }
 
     // ─── Google Drive'dan Yükle ──────────────────────────────────
     async loadFromGoogleDrive() {
         await this._ensureToken();
 
+        const folderId = await this._getOrCreateTomarFolder();
         const fileName = 'tomar-notlar.json';
         const searchRes = await fetch(
-            `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D'${fileName}'&fields=files(id,name)`,
+            `https://www.googleapis.com/drive/v3/files?q=name%3D'${fileName}'+and+'${folderId}'+in+parents+and+trashed%3Dfalse&fields=files(id,name)`,
             { headers: { Authorization: `Bearer ${this.gdriveToken}` } }
         );
 
@@ -208,7 +208,7 @@ class CloudStorageManager {
         const file = searchData.files?.[0];
 
         if (!file) {
-            return { success: false, message: 'Drive\'da kayıtlı veri bulunamadı.' };
+            return { success: false, message: 'Drive / Tomar klasöründe kayıtlı veri bulunamadı.' };
         }
 
         const fileRes = await fetch(
@@ -220,7 +220,44 @@ class CloudStorageManager {
 
         const data = await fileRes.json();
         await this._applyImportedData(data);
-        return { success: true, message: 'Google Drive\'dan yüklendi!' };
+        return { success: true, message: 'Google Drive / Tomar klasöründen yüklenedildi!' };
+    }
+
+    // ─── Yardımcı: Tomar klasörünü bul veya oluştur ───────────────
+    async _getOrCreateTomarFolder() {
+        const headers = { Authorization: `Bearer ${this.gdriveToken}` };
+        const folderName = 'Tomar';
+
+        // Önce mevcut Tomar klasörünü ara
+        const searchRes = await fetch(
+            `https://www.googleapis.com/drive/v3/files?q=name%3D'${folderName}'+and+mimeType%3D'application%2Fvnd.google-apps.folder'+and+trashed%3Dfalse&fields=files(id,name)`,
+            { headers }
+        );
+        if (!searchRes.ok) {
+            this.gdriveToken = null;
+            localStorage.removeItem('tomar_gdrive_token');
+            throw new Error('Google Drive bağlantısı kesildi. Lütfen tekrar deneyin.');
+        }
+        const searchData = await searchRes.json();
+        if (searchData.files?.length > 0) {
+            return searchData.files[0].id; // Mevcut klasörü kullan
+        }
+
+        // Yoksa oluştur
+        const createRes = await fetch(
+            'https://www.googleapis.com/drive/v3/files',
+            {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: folderName,
+                    mimeType: 'application/vnd.google-apps.folder'
+                })
+            }
+        );
+        if (!createRes.ok) throw new Error('Tomar klasörü oluşturulamadı.');
+        const folder = await createRes.json();
+        return folder.id;
     }
 
     // ─── Yardımcı: Tüm veriyi topla ─────────────────────────────
