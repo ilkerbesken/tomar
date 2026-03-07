@@ -1097,31 +1097,30 @@ class Dashboard {
         }
     }
 
-    renameFolder(id, newName) {
+    async renameFolder(id, newName) {
         const folder = this.folders.find(f => f.id === id);
         if (folder && newName.trim()) {
             folder.name = newName.trim();
-            this.saveData('wb_folders', this.folders);
+            await this.saveDataAsync('wb_folders', this.folders);
             this.renderSidebar();
             if (this.currentView === id) {
                 this.breadcrumb.textContent = `Tomar / ${folder.name}`;
             }
         } else {
-            this.renderSidebar(); // Revert UI
-        }
-    }
-
-    changeFolderColor(id, color) {
-        const folder = this.folders.find(f => f.id === id);
-        if (folder) {
-            folder.color = color;
-            this.saveData('wb_folders', this.folders);
             this.renderSidebar();
         }
     }
 
-    deleteFolder(id) {
-        // Recursive folder deletion
+    async changeFolderColor(id, color) {
+        const folder = this.folders.find(f => f.id === id);
+        if (folder) {
+            folder.color = color;
+            await this.saveDataAsync('wb_folders', this.folders);
+            this.renderSidebar();
+        }
+    }
+
+    async deleteFolder(id) {
         const getAllChildren = (folderId) => {
             let result = [folderId];
             this.folders.filter(f => f.parentId === folderId).forEach(child => {
@@ -1132,13 +1131,31 @@ class Dashboard {
 
         const idsToDelete = getAllChildren(id);
 
-        // Delete boards that are in any of these folders
-        this.boards = this.boards.filter(b => !idsToDelete.includes(b.folderId));
-        this.saveData('wb_boards', this.boards);
+        // Bu klasörlerdeki board içeriklerini (native + IndexedDB) sil
+        const boardsInFolders = this.boards.filter(b => idsToDelete.includes(b.folderId));
+        await Promise.all(boardsInFolders.map(b =>
+            window.fileSystemManager.removeItem(`wb_content_${b.id}`)
+        ));
 
-        // Delete the folders themselves
+        // Native'de klasör yapısını temizle
+        if (window.fileSystemManager.mode === 'native' && window.fileSystemManager.dirHandle) {
+            const rootFolderPath = window.fileSystemManager._getFolderPath(id);
+            if (rootFolderPath.length > 0) {
+                try {
+                    let parentDir = window.fileSystemManager.dirHandle;
+                    for (let i = 0; i < rootFolderPath.length - 1; i++) {
+                        parentDir = await parentDir.getDirectoryHandle(rootFolderPath[i], { create: false });
+                    }
+                    await parentDir.removeEntry(rootFolderPath[rootFolderPath.length - 1], { recursive: true }).catch(() => {});
+                } catch (e) {}
+            }
+        }
+
+        this.boards = this.boards.filter(b => !idsToDelete.includes(b.folderId));
+        await this.saveDataAsync('wb_boards', this.boards);
+
         this.folders = this.folders.filter(f => !idsToDelete.includes(f.id));
-        this.saveData('wb_folders', this.folders);
+        await this.saveDataAsync('wb_folders', this.folders);
 
         if (idsToDelete.includes(this.currentView)) {
             this.switchView('all');
@@ -1481,19 +1498,20 @@ class Dashboard {
         this.renderBoards();
     }
 
-    deleteBoard(id) {
+    async deleteBoard(id) {
         const board = this.boards.find(b => b.id === id);
         if (board) {
             if (board.deleted) {
-                // Hard delete
+                // Hard delete — IndexedDB + native klasör
                 this.boards = this.boards.filter(b => b.id !== id);
-                localStorage.removeItem(`wb_content_${id}`);
+                // FileSystemManager üzerinden sil (native klasörü de temizler)
+                await window.fileSystemManager.removeItem(`wb_content_${id}`);
             } else {
-                // Soft delete
+                // Soft delete (çöp kutusuna taşı)
                 board.deleted = true;
             }
 
-            this.saveData('wb_boards', this.boards);
+            await this.saveDataAsync('wb_boards', this.boards);
 
             // Remove from TabManager if open
             if (this.app.tabManager) {
@@ -1504,25 +1522,23 @@ class Dashboard {
         }
     }
 
-    emptyTrash() {
-        const trashCount = this.boards.filter(b => b.deleted).length;
-        if (trashCount === 0) return;
+    async emptyTrash() {
+        const trashedBoards = this.boards.filter(b => b.deleted);
+        if (trashedBoards.length === 0) return;
 
-        if (confirm(`Çöp kutusundaki ${trashCount} öğeyi kalıcı olarak silmek istediğinize emin misiniz?`)) {
-            // Permanently delete boards and their content
-            this.boards.filter(b => b.deleted).forEach(b => {
-                localStorage.removeItem(`wb_content_${b.id}`);
-                // Also remove from Utils.db if it's a PDF
+        if (confirm(`Çöp kutusundaki ${trashedBoards.length} öğeyi kalıcı olarak silmek istediğinize emin misiniz?`)) {
+            // FileSystemManager üzerinden sil (IndexedDB + native klasör)
+            await Promise.all(trashedBoards.map(async b => {
+                await window.fileSystemManager.removeItem(`wb_content_${b.id}`);
                 if (b.isPDF) {
-                    Utils.db.delete(b.id).catch(err => console.error('Error deleting PDF from DB:', err));
+                    Utils.db.delete(b.id).catch(err => console.error('PDF silme hatası:', err));
                 }
-            });
+            }));
 
-            const idsToClose = this.boards.filter(b => b.deleted).map(b => b.id);
+            const idsToClose = trashedBoards.map(b => b.id);
             this.boards = this.boards.filter(b => !b.deleted);
-            this.saveData('wb_boards', this.boards);
+            await this.saveDataAsync('wb_boards', this.boards);
 
-            // Remove from TabManager if open
             if (this.app.tabManager) {
                 idsToClose.forEach(id => this.app.tabManager.closeTab(id));
             }
@@ -1540,24 +1556,42 @@ class Dashboard {
         }
     }
 
-    renameBoard(id, newName) {
+    async renameBoard(id, newName) {
         const board = this.boards.find(b => b.id === id);
         if (board && newName.trim()) {
+            // Eski yolu kaydet (taşıma için)
+            const oldBoard = { ...board };
             board.name = newName.trim();
-            this.saveData('wb_boards', this.boards);
+            await this.saveDataAsync('wb_boards', this.boards);
 
-            // Update tab title if this board is open in a tab
+            // Native klasörde dosyayı yeni isme taşı
+            await window.fileSystemManager.moveBoardNativeFile(id, oldBoard);
+            // Yeni konuma kaydet
+            if (window.fileSystemManager.mode === 'native') {
+                const content = await window.fileSystemManager.getItem(`wb_content_${id}`, null);
+                if (content) await window.fileSystemManager._saveBoardToNative(`wb_content_${id}`, content);
+            }
+
             if (this.app.tabManager) {
                 this.app.tabManager.updateTabTitle(id, newName.trim());
             }
         }
     }
 
-    moveBoardToFolder(boardId, folderId) {
+    async moveBoardToFolder(boardId, folderId) {
         const board = this.boards.find(b => b.id === boardId);
         if (board) {
+            const oldBoard = { ...board };
             board.folderId = folderId || null;
-            this.saveData('wb_boards', this.boards);
+            await this.saveDataAsync('wb_boards', this.boards);
+
+            // Native klasörde dosyayı yeni konuma taşı
+            await window.fileSystemManager.moveBoardNativeFile(boardId, oldBoard);
+            if (window.fileSystemManager.mode === 'native') {
+                const content = await window.fileSystemManager.getItem(`wb_content_${boardId}`, null);
+                if (content) await window.fileSystemManager._saveBoardToNative(`wb_content_${boardId}`, content);
+            }
+
             this.renderBoards();
         }
     }
