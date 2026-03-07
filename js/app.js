@@ -745,9 +745,9 @@ class TomarApp {
 
         const btnHome = document.getElementById('btnHome');
         if (btnHome) {
-            btnHome.onclick = () => {
+            btnHome.onclick = async () => {
                 if (window.dashboard) {
-                    window.dashboard.showDashboard();
+                    await window.dashboard.showDashboard();
                 }
             };
         }

@@ -219,7 +219,8 @@ class CloudStorageManager {
 
             return {
                 success: true,
-                message: syncCount > 0 ? `${syncCount} dosya eşitlendi.` : 'Her şey güncel.'
+                message: syncCount > 0 ? `${syncCount} dosya eşitlendi.` : 'Her şey güncel.',
+                syncCount: syncCount
             };
 
         } catch (err) {

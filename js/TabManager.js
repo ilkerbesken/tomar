@@ -94,14 +94,14 @@ class TabManager {
     /**
      * Close a tab
      */
-    closeTab(boardId, event) {
+    async closeTab(boardId, event) {
         if (event) {
             event.stopPropagation();
         }
 
         if (this.tabs.length <= 1) {
             if (window.dashboard) {
-                window.dashboard.showDashboard();
+                await window.dashboard.showDashboard();
             }
             this.tabs = [];
             this.activeBoardId = null;

@@ -814,7 +814,7 @@ class Dashboard {
         }
     }
 
-    switchView(view) {
+    async switchView(view) {
         this.currentView = view;
         const folder = this.folders.find(f => f.id === view);
         const titles = {
@@ -835,7 +835,7 @@ class Dashboard {
         this.renderBoards();
     }
 
-    createNewFolder(parentId = null) {
+    async createNewFolder(parentId = null) {
         const id = 'f_' + Date.now();
 
         // Find a unique name
@@ -859,8 +859,8 @@ class Dashboard {
         };
         // Position at top of dynamic list
         this.folders.unshift(newFolder);
-        this.saveData('wb_folders', this.folders);
-        this.switchView(id);
+        await this.saveDataAsync('wb_folders', this.folders);
+        await this.switchView(id);
 
         // Auto focus for renaming
         setTimeout(() => {
@@ -1289,7 +1289,7 @@ class Dashboard {
             await Utils.db.save(id, file);
 
             this.boards.push(newBoard);
-            this.saveData('wb_boards', this.boards);
+            await this.saveDataAsync('wb_boards', this.boards);
 
             this.renderBoards();
             this.renderSidebar();
@@ -1491,13 +1491,14 @@ class Dashboard {
         });
     }
 
-    showDashboard() {
+    async showDashboard() {
         this.saveCurrentBoard();
 
         // Keep tabs open when returning to dashboard
         // Users can close tabs manually if needed
 
-        this.boards = this.loadData('wb_boards', []); // Refresh
+        this.boards = await this.loadDataAsync('wb_boards', []); // Refresh
+        this.folders = await this.loadDataAsync('wb_folders', []); // Refresh
         this.currentBoardId = null;
         this.container.style.display = 'flex';
         this.appContainer.style.display = 'none';
@@ -1554,11 +1555,11 @@ class Dashboard {
         }
     }
 
-    toggleFavorite(id) {
+    async toggleFavorite(id) {
         const board = this.boards.find(b => b.id === id);
         if (board) {
             board.favorite = !board.favorite;
-            this.saveData('wb_boards', this.boards);
+            await this.saveDataAsync('wb_boards', this.boards);
             this.renderBoards();
         }
     }
@@ -1603,11 +1604,11 @@ class Dashboard {
         }
     }
 
-    updateBoardShape(boardId, shape) {
+    async updateBoardShape(boardId, shape) {
         const board = this.boards.find(b => b.id === boardId);
         if (board) {
             board.shape = shape;
-            this.saveData('wb_boards', this.boards);
+            await this.saveDataAsync('wb_boards', this.boards);
             this.renderBoards();
         }
     }
@@ -1616,7 +1617,7 @@ class Dashboard {
         const logo = document.getElementById('btnHome');
         if (logo) {
             logo.style.pointerEvents = 'auto'; // Force enable
-            logo.onclick = () => this.showDashboard();
+            logo.onclick = async () => await this.showDashboard();
         }
 
         const handleSave = () => {
@@ -2268,7 +2269,7 @@ class Dashboard {
         };
 
         this.boards.push(newBoard);
-        this.saveData('wb_boards', this.boards);
+        await this.saveDataAsync('wb_boards', this.boards);
 
         // Close template gallery
         this.closeTemplateGallery();
@@ -2286,15 +2287,19 @@ class Dashboard {
 
         document.getElementById('btnBulkCancel')?.addEventListener('click', () => this.clearSelection());
 
-        document.getElementById('btnBulkDelete')?.addEventListener('click', () => {
+        document.getElementById('btnBulkDelete')?.addEventListener('click', async () => {
             if (confirm(`${this.selectedBoards.size} notu silmek istediğinize emin misiniz?`)) {
-                this.selectedBoards.forEach(id => this.deleteBoard(id));
+                for (const id of this.selectedBoards) {
+                    await this.deleteBoard(id);
+                }
                 this.clearSelection();
             }
         });
 
-        document.getElementById('btnBulkFavorite')?.addEventListener('click', () => {
-            this.selectedBoards.forEach(id => this.toggleFavorite(id));
+        document.getElementById('btnBulkFavorite')?.addEventListener('click', async () => {
+            for (const id of this.selectedBoards) {
+                await this.toggleFavorite(id);
+            }
             this.clearSelection();
         });
 
@@ -2304,16 +2309,15 @@ class Dashboard {
             this.openCoverPicker(null); // Null indicates bulk mode
         });
 
-        // Taşı - Opens folder picker modal immediately
         document.getElementById('btnBulkMove')?.addEventListener('click', (e) => {
             e.stopPropagation();
-            this.showFolderPicker((folderId) => {
+            this.showFolderPicker(async (folderId) => {
                 const folderIdFinal = folderId === "" ? null : folderId;
                 this.selectedBoards.forEach(id => {
                     const board = this.boards.find(b => b.id === id);
                     if (board) board.folderId = folderIdFinal;
                 });
-                this.saveData('wb_boards', this.boards);
+                await this.saveDataAsync('wb_boards', this.boards);
                 this.clearSelection();
             });
         });
@@ -2434,8 +2438,9 @@ class Dashboard {
 
     getFilteredBoards() {
         // Refresh data to ensure we have latest states
-        const loadedBoards = this.loadData('wb_boards', []);
-        this.boards = Array.isArray(loadedBoards) ? loadedBoards : [];
+        // Note: this.boards and this.folders should already be up to date from mutations
+        // but we ensure it's an array for safety.
+        if (!Array.isArray(this.boards)) this.boards = [];
 
         let filtered = [];
 
@@ -2531,7 +2536,10 @@ class Dashboard {
             if (syncTimer) clearTimeout(syncTimer);
             syncTimer = setTimeout(async () => {
                 console.log('[AutoSync] Değişiklikler algılandı, buluta aktarılıyor...');
-                await cloud.syncWithGoogleDrive();
+                const res = await cloud.syncWithGoogleDrive();
+                if (res.success && res.syncCount > 0) {
+                    await this.initAsync();
+                }
             }, 5000); // 5 saniye sonra eşitle
         };
 
@@ -2549,9 +2557,10 @@ class Dashboard {
             if (document.visibilityState === 'visible') {
                 console.log('[AutoSync] Bulut kontrol ediliyor...');
                 const res = await cloud.syncWithGoogleDrive(); // Bu metod hem download hem upload yapar
-                if (res.success && res.message.includes('not güncellendi')) {
+                if (res.success && res.syncCount > 0) {
+                    console.log('[AutoSync] Yeni veriler indirildi, arayüz tazeleniyor...');
                     // Eğer yeni bir şey indirilmişse arayüzü tazele
-                    this.initAsync();
+                    await this.initAsync();
                 }
             }
         }, 60000); 
