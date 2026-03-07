@@ -341,6 +341,12 @@ class CloudStorageManager {
         const safeName = this._sanitizeName(board.name) || board.id;
         const fileName = board.isPDF ? `${safeName}.pdf.tom` : `${safeName}.tom`;
 
+        // Eğer ID yoksa, aynı isimli dosya var mı diye isimle arat (duplikasyonu önlemek için)
+        if (!existingFileId) {
+            const found = await this._findFileInFolder(fileName, targetFolderId);
+            if (found) existingFileId = found.id;
+        }
+
         // .tom formatında sıkıştır (pako/gzip)
         const tomBytes = await this._contentToTom(content);
 

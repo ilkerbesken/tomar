@@ -721,9 +721,10 @@ class Dashboard {
             const coverBg = board.coverBg || '#4a90e2';
             const coverTexture = board.coverTexture || 'linear';
 
-            // dot-tom.svg yalnızca yerel klasör (native) modunda gösterilir.
-            // Google Drive bağlı veya web/PWA modunda renkli kapaklar kullanılır.
-            const isFileMode = window.fileSystemManager?.mode === 'native';
+            // PWA veya Web modunda (Google Drive dahil) her zaman renkli kapaklar gösterilir.
+            // dot-tom.svg sadece 'native' yerel klasör modunda, tarayıcı dışı/saf yerel kullanımda tercih edilir.
+            const isPWA = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+            const isFileMode = (window.fileSystemManager?.mode === 'native') && !isPWA;
 
             const notebookCoverHTML = isFileMode
                 ? `<div class="tom-file-preview" style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;">
