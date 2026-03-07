@@ -339,11 +339,21 @@ class CloudStorageManager {
                 if (dataId.files?.length > 0) {
                     const driveFolder = dataId.files[0];
                     // Eğer isim değişmişse veya klasör taşınmışsa güncelle
-                    if (driveFolder.name !== name || (parentId && !driveFolder.parents?.includes(parentId))) {
-                        await fetch(`https://www.googleapis.com/drive/v3/files/${driveFolder.id}`, {
+                    const nameChanged = driveFolder.name !== name;
+                    const parentChanged = parentId && !driveFolder.parents?.includes(parentId);
+
+                    if (nameChanged || parentChanged) {
+                        let patchUrl = `https://www.googleapis.com/drive/v3/files/${driveFolder.id}?`;
+                        const params = new URLSearchParams();
+                        if (parentChanged) {
+                            params.append('addParents', parentId);
+                            if (driveFolder.parents?.[0]) params.append('removeParents', driveFolder.parents[0]);
+                        }
+                        
+                        await fetch(patchUrl + params.toString(), {
                             method: 'PATCH',
                             headers: { ...headers, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ name, addParents: parentId, removeParents: driveFolder.parents?.[0] })
+                            body: JSON.stringify({ name })
                         });
                     }
                     this._folderIdCache[cacheKey] = driveFolder.id;
@@ -603,14 +613,30 @@ class CloudStorageManager {
             ? { name: fileName, appProperties }
             : { name: fileName, parents: [folderId], appProperties };
 
+        let url = existingFileId
+            ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`
+            : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+
+        // Eğer mevcut dosya varsa ve klasörü değişmişse taşı
+        if (existingFileId && folderId) {
+            try {
+                const headRes = await fetch(`https://www.googleapis.com/drive/v3/files/${existingFileId}?fields=parents`, {
+                    headers: { Authorization: `Bearer ${this.gdriveToken}` }
+                });
+                if (headRes.ok) {
+                    const fileInfo = await headRes.json();
+                    const currentParent = fileInfo.parents?.[0];
+                    if (currentParent && currentParent !== folderId) {
+                        url += `&addParents=${folderId}&removeParents=${currentParent}`;
+                    }
+                }
+            } catch (e) { console.warn('[CloudSync] Taşıma kontrolü hatası:', e); }
+        }
+
         const blob = new Blob([bytes], { type: mimeType });
         const form = new FormData();
         form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
         form.append('file', blob);
-
-        const url = existingFileId
-            ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`
-            : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
 
         const res = await fetch(url, {
             method: existingFileId ? 'PATCH' : 'POST',
@@ -678,10 +704,16 @@ class CloudStorageManager {
                         }
                     }
                 } else if (type === 'folder') {
-                    if (isNew) continue; 
                     // Sadece 'folderId'si olan ve listede olmayanları sil (Önemli klasörleri koru)
                     if (folderId && file.name !== 'Tomar' && file.name !== '.settings') {
-                        if (!folderIds.has(folderId)) shouldDelete = true;
+                        if (!folderIds.has(folderId)) {
+                            // İstisna: Yerelde az önce silindiyse anında sil
+                            if (locallyDeletedIds.includes(folderId)) {
+                                shouldDelete = true;
+                            } else if (!isNew) {
+                                shouldDelete = true;
+                            }
+                        }
                     }
                 }
 

@@ -1164,6 +1164,17 @@ class Dashboard {
         this.folders = this.folders.filter(f => !idsToDelete.includes(f.id));
         await this.saveDataAsync('wb_folders', this.folders);
 
+        // Senkronizasyon için silindiğini işaretle
+        const deletedIds = await this.loadDataAsync('wb_deleted_ids', []);
+        let changed = false;
+        idsToDelete.forEach(id => {
+            if (!deletedIds.includes(id)) {
+                deletedIds.push(id);
+                changed = true;
+            }
+        });
+        if (changed) await this.saveDataAsync('wb_deleted_ids', deletedIds);
+
         if (idsToDelete.includes(this.currentView)) {
             this.switchView('all');
         } else {
@@ -1587,6 +1598,9 @@ class Dashboard {
             if (this.app.tabManager) {
                 this.app.tabManager.updateTabTitle(id, newName.trim());
             }
+
+            // Sync trigger
+            if (window.fileSystemManager.onSave) window.fileSystemManager.onSave();
         }
     }
 
@@ -1605,6 +1619,7 @@ class Dashboard {
             }
 
             this.renderBoards();
+            if (window.fileSystemManager.onSave) window.fileSystemManager.onSave();
         }
     }
 
@@ -2561,7 +2576,7 @@ class Dashboard {
                 if (res.success && res.syncCount > 0) {
                     await this.initAsync();
                 }
-            }, 3000); // 3 saniye sonra eşitle
+            }, 1500); // 1.5 saniye sonra eşitle
         };
 
         window.fileSystemManager.onRemove = () => {
@@ -2572,7 +2587,7 @@ class Dashboard {
                 if (res.success && res.syncCount > 0) {
                     await this.initAsync();
                 }
-            }, 3000);
+            }, 1500);
         };
 
         // 2. Auto-Pull (Polling)
