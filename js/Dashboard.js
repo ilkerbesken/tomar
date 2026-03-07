@@ -1185,15 +1185,12 @@ class Dashboard {
         const board = this.boards.find(b => b.id === id);
         if (!board) return;
 
-        if (board.deleted) {
-            if (confirm(`'${board.name}' notunu kalıcı olarak silmek istediğinize emin misiniz?`)) {
-                this.deleteBoard(id);
-            }
-        } else {
-            // Soft delete with shorter confirmation/risk
-            if (confirm(`'${board.name}' notunu çöp kutusuna taşımak istediğinize emin misiniz?`)) {
-                this.deleteBoard(id);
-            }
+        const msg = board.deleted 
+            ? `'${board.name}' notunu kalıcı olarak silmek istediğinize emin misiniz?`
+            : `'${board.name}' notunu çöp kutusuna taşımak istediğinize emin misiniz?`;
+
+        if (confirm(msg)) {
+            this.deleteBoard(id);
         }
     }
 
@@ -1514,6 +1511,13 @@ class Dashboard {
                 this.boards = this.boards.filter(b => b.id !== id);
                 // FileSystemManager üzerinden sil (native klasörü de temizler)
                 await window.fileSystemManager.removeItem(`wb_content_${id}`);
+                
+                // Senkronizasyon için silindiğini işaretle
+                const deletedIds = await this.loadDataAsync('wb_deleted_ids', []);
+                if (!deletedIds.includes(id)) {
+                    deletedIds.push(id);
+                    await this.saveDataAsync('wb_deleted_ids', deletedIds);
+                }
             } else {
                 // Soft delete (çöp kutusuna taşı)
                 board.deleted = true;
@@ -2285,42 +2289,59 @@ class Dashboard {
     setupBulkActions() {
         this.bulkToolbar = document.getElementById('bulkActionsToolbar');
 
-        document.getElementById('btnBulkCancel')?.addEventListener('click', () => this.clearSelection());
+        const btnCancel = document.getElementById('btnBulkCancel');
+        if (btnCancel) btnCancel.onclick = () => this.clearSelection();
 
-        document.getElementById('btnBulkDelete')?.addEventListener('click', async () => {
-            if (confirm(`${this.selectedBoards.size} notu silmek istediğinize emin misiniz?`)) {
+        const btnDelete = document.getElementById('btnBulkDelete');
+        if (btnDelete) {
+            btnDelete.onclick = async () => {
+                const count = this.selectedBoards.size;
+                if (count === 0) return;
+                
+                if (confirm(`${count} notu silmek istediğinize emin misiniz?`)) {
+                    // Collect IDs first to avoid set modification during iteration
+                    const idsToArchive = Array.from(this.selectedBoards);
+                    for (const id of idsToArchive) {
+                        await this.deleteBoard(id);
+                    }
+                    this.clearSelection();
+                }
+            };
+        }
+
+        const btnFav = document.getElementById('btnBulkFavorite');
+        if (btnFav) {
+            btnFav.onclick = async () => {
                 for (const id of this.selectedBoards) {
-                    await this.deleteBoard(id);
+                    await this.toggleFavorite(id);
                 }
                 this.clearSelection();
-            }
-        });
+            };
+        }
 
-        document.getElementById('btnBulkFavorite')?.addEventListener('click', async () => {
-            for (const id of this.selectedBoards) {
-                await this.toggleFavorite(id);
-            }
-            this.clearSelection();
-        });
+        const btnCover = document.getElementById('btnBulkChangeCover');
+        if (btnCover) {
+            btnCover.onclick = (e) => {
+                e.stopPropagation();
+                this.openCoverPicker(null);
+            };
+        }
 
-        // Kapak Değiştir - Opens cover picker modal immediately
-        document.getElementById('btnBulkChangeCover')?.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.openCoverPicker(null); // Null indicates bulk mode
-        });
-
-        document.getElementById('btnBulkMove')?.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.showFolderPicker(async (folderId) => {
-                const folderIdFinal = folderId === "" ? null : folderId;
-                this.selectedBoards.forEach(id => {
-                    const board = this.boards.find(b => b.id === id);
-                    if (board) board.folderId = folderIdFinal;
+        const btnMove = document.getElementById('btnBulkMove');
+        if (btnMove) {
+            btnMove.onclick = (e) => {
+                e.stopPropagation();
+                this.showFolderPicker(async (folderId) => {
+                    const folderIdFinal = folderId === "" ? null : folderId;
+                    this.selectedBoards.forEach(id => {
+                        const board = this.boards.find(b => b.id === id);
+                        if (board) board.folderId = folderIdFinal;
+                    });
+                    await this.saveDataAsync('wb_boards', this.boards);
+                    this.clearSelection();
                 });
-                await this.saveDataAsync('wb_boards', this.boards);
-                this.clearSelection();
-            });
-        });
+            };
+        }
     }
 
     toggleBoardSelection(id, isSelected) {

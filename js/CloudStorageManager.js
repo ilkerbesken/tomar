@@ -147,6 +147,7 @@ class CloudStorageManager {
 
             let localBoards = await fsm.getItem('wb_boards', []);
             let localFolders = await fsm.getItem('wb_folders', []);
+            const locallyDeletedIds = await fsm.getItem('wb_deleted_ids', []);
 
             if (remoteManifestFile) {
                 try {
@@ -186,7 +187,9 @@ class CloudStorageManager {
                                 // Yerelde yok. Acaba silindiği için mi yok yoksa yeni mi?
                                 if (meta && meta.googleDriveFileId) {
                                     // Daha önce senkronize edilmiş ama yerelde yok -> Yerelde silinmiş.
-                                    // Tekrar indirme.
+                                    continue;
+                                } else if (locallyDeletedIds.includes(rb.id)) {
+                                    // Yerelde az önce silindi, manifest henüz güncellenmedi
                                     continue;
                                 } else {
                                     // Tamamen yeni bir board (başka cihazdan)
@@ -279,7 +282,13 @@ class CloudStorageManager {
             await this._syncManifest(settingsFolderId);
 
             // ── ÇÖP TOPLAMA (Garbage Collection) ──────────────────
-            await this._garbageCollect(tomarFolderId, boards, folders);
+            await this._garbageCollect(tomarFolderId, boards, folders, locallyDeletedIds);
+
+            // ── Temizlik: Artık silindiği kesinleşen ID'leri listeden çıkar ──
+            if (locallyDeletedIds.length > 0) {
+                // Garbage collect sonrası yereldeki listeyi temizle
+                await fsm.saveItem('wb_deleted_ids', [], true);
+            }
 
             return {
                 success: true,
@@ -623,7 +632,7 @@ class CloudStorageManager {
     /**
      * Drive'daki dosyaları ve klasörleri kontrol ederek manifest'te olmayanları siler.
      */
-    async _garbageCollect(tomarFolderId, localBoards, localFolders) {
+    async _garbageCollect(tomarFolderId, localBoards, localFolders, locallyDeletedIds = []) {
         try {
             const headers = { Authorization: `Bearer ${this.gdriveToken}` };
             
@@ -652,16 +661,24 @@ class CloudStorageManager {
 
                 let shouldDelete = false;
 
-                // GÜVENLİK: Eğer dosya/klasör son 2 dakika içinde oluşturulmuşsa dokunma.
-                // (Senkronizasyon gecikmeleri nedeniyle hatalı silmeleri önler)
                 const createdTime = new Date(file.createdTime).getTime();
                 const now = Date.now();
-                if (now - createdTime < 120000) continue; 
+                const isNew = (now - createdTime < 120000);
 
                 if (type === 'board') {
                     // Sadece 'boardId'si olan ve listede olmayanları sil
-                    if (boardId && !boardIds.has(boardId)) shouldDelete = true;
+                    if (boardId) {
+                        if (!boardIds.has(boardId)) {
+                            // İstisna: Eğer yerelde az önce sildiğimizi biliyorsak 2 dk kuralını atla
+                            if (locallyDeletedIds.includes(boardId)) {
+                                shouldDelete = true;
+                            } else if (!isNew) {
+                                shouldDelete = true;
+                            }
+                        }
+                    }
                 } else if (type === 'folder') {
+                    if (isNew) continue; 
                     // Sadece 'folderId'si olan ve listede olmayanları sil (Önemli klasörleri koru)
                     if (folderId && file.name !== 'Tomar' && file.name !== '.settings') {
                         if (!folderIds.has(folderId)) shouldDelete = true;
