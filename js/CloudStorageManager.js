@@ -145,31 +145,94 @@ class CloudStorageManager {
             const settingsFolderId = await this._getOrCreateDriveFolder('.settings', tomarFolderId);
             const remoteManifestFile = await this._findFileInFolder('tomar-manifest.json', settingsFolderId);
 
+            let localBoards = await fsm.getItem('wb_boards', []);
+            let localFolders = await fsm.getItem('wb_folders', []);
+
             if (remoteManifestFile) {
                 try {
                     const res = await fetch(
                         `https://www.googleapis.com/drive/v3/files/${remoteManifestFile.id}?alt=media`,
                         { headers: { Authorization: `Bearer ${this.gdriveToken}` } }
                     );
-                    const remoteManifest = await res.json();
-                    const localBoards = await fsm.getItem('wb_boards', []);
+                    if (res.ok) {
+                        const remoteManifest = await res.json();
+                        const remoteBoards = remoteManifest.boards || [];
+                        const remoteFolders = remoteManifest.folders || [];
 
-                    for (const rb of (remoteManifest.boards || [])) {
-                        const lb = localBoards.find(b => b.id === rb.id);
-                        if (!lb || rb.lastModified > (lb.lastModified || 0)) {
-                            // .tom dosyasını Drive'dan indir
-                            const tomContent = await this._downloadBoardTom(rb, remoteManifest.folders || [], tomarFolderId);
+                        // 1. Klasörleri Senkronize Et (Merge)
+                        for (const rf of remoteFolders) {
+                            const lfIndex = localFolders.findIndex(f => f.id === rf.id);
+                            if (lfIndex === -1) {
+                                // Yeni klasör (remote'da var, yerelde yok)
+                                localFolders.push(rf);
+                                syncCount++;
+                            } else {
+                                // Mevcut klasör - Güncelleme kontrolü (isim/renk değişmiş olabilir)
+                                // Not: Klasörlerin lastModified özelliği yoksa isim kontrolü yapabiliriz
+                                if (rf.name !== localFolders[lfIndex].name || rf.color !== localFolders[lfIndex].color || rf.parentId !== localFolders[lfIndex].parentId) {
+                                    localFolders[lfIndex] = rf;
+                                    syncCount++;
+                                }
+                            }
+                        }
+
+                        // 2. Boardları Senkronize Et (Download & Update)
+                        const boardsToSync = [];
+                        for (const rb of remoteBoards) {
+                            const lb = localBoards.find(b => b.id === rb.id);
+                            const meta = await fsm.getSyncMetadata(rb.id);
+
+                            if (!lb) {
+                                // Yerelde yok. Acaba silindiği için mi yok yoksa yeni mi?
+                                if (meta && meta.googleDriveFileId) {
+                                    // Daha önce senkronize edilmiş ama yerelde yok -> Yerelde silinmiş.
+                                    // Tekrar indirme.
+                                    continue;
+                                } else {
+                                    // Tamamen yeni bir board (başka cihazdan)
+                                    boardsToSync.push(rb);
+                                }
+                            } else if (rb.lastModified > (lb.lastModified || 0)) {
+                                // Remote daha güncel
+                                boardsToSync.push(rb);
+                            }
+                        }
+
+                        for (const rb of boardsToSync) {
+                            const tomContent = await this._downloadBoardTom(rb, remoteFolders, tomarFolderId);
                             if (tomContent) {
                                 await fsm.saveItem(`wb_content_${rb.id}`, tomContent, true);
+                                // Local listeyi güncelle/ekle
+                                const idx = localBoards.findIndex(b => b.id === rb.id);
+                                if (idx !== -1) {
+                                    localBoards[idx] = rb;
+                                } else {
+                                    localBoards.push(rb);
+                                }
                                 syncCount++;
                             }
                         }
-                    }
 
-                    if (syncCount > 0 || !localBoards.length) {
-                        if (remoteManifest.boards?.length) {
-                            await fsm.saveItem('wb_boards', remoteManifest.boards, true);
-                            await fsm.saveItem('wb_folders', remoteManifest.folders || [], true);
+                        // 3. Uzaktan Silinenleri Yerelde Sil
+                        const remoteBoardIds = new Set(remoteBoards.map(b => b.id));
+                        const localBoardsAfterPull = [];
+                        for (const lb of localBoards) {
+                            const meta = await fsm.getSyncMetadata(lb.id);
+                            if (meta && meta.googleDriveFileId && !remoteBoardIds.has(lb.id)) {
+                                // Daha önce senkronize edilmiş ama artık remote manifest'te yok -> Remote'da silinmiş.
+                                console.log(`[CloudSync] Uzaktan silinmiş, yerelden kaldırılıyor: ${lb.name}`);
+                                await fsm.removeItem(`wb_content_${lb.id}`);
+                                syncCount++;
+                                continue;
+                            }
+                            localBoardsAfterPull.push(lb);
+                        }
+                        localBoards = localBoardsAfterPull;
+
+                        // 4. Değişiklikleri Kaydet
+                        if (syncCount > 0) {
+                            await fsm.saveItem('wb_boards', localBoards, true);
+                            await fsm.saveItem('wb_folders', localFolders, true);
                             if (remoteManifest.viewSettings) {
                                 await fsm.saveItem('wb_view_settings', remoteManifest.viewSettings, true);
                             }
@@ -181,8 +244,9 @@ class CloudStorageManager {
             }
 
             // ── PUSH: Yereldeki değişiklikleri Drive'a yükle ──
-            const boards = await fsm.getItem('wb_boards', []);
-            const folders = await fsm.getItem('wb_folders', []);
+            // localBoards ve localFolders güncel hallerini kullan
+            const boards = localBoards;
+            const folders = localFolders;
 
             // Uygulama klasör yapısını Drive'da yansıt
             await this._ensureDriveFolders(folders, tomarFolderId);
@@ -195,7 +259,7 @@ class CloudStorageManager {
                 }
 
                 const needsUpload = !meta.googleDriveFileId ||
-                    (meta.lastModifiedLocally > meta.lastSyncedTime);
+                    (meta.lastModifiedLocally > (meta.lastSyncedTime || 0));
 
                 if (needsUpload) {
                     const content = await fsm.getItem(`wb_content_${board.id}`, null);
@@ -210,16 +274,16 @@ class CloudStorageManager {
                 }
             }
 
-            // ── Seçenek A: .settings/tomar-manifest.json'u güncelle ──
+            // ── Manifest Güncelleme ──
+            // PUSH sonrası manifesti tekrar güncelle ki son haller (ID'ler vb) Drive'da olsun
             await this._syncManifest(settingsFolderId);
 
             // ── ÇÖP TOPLAMA (Garbage Collection) ──────────────────
-            // Drive'da olup manifest'te olmayan dosyaları sil
             await this._garbageCollect(tomarFolderId, boards, folders);
 
             return {
                 success: true,
-                message: syncCount > 0 ? `${syncCount} dosya eşitlendi.` : 'Her şey güncel.',
+                message: syncCount > 0 ? `${syncCount} değişiklik işlendi.` : 'Her şey güncel.',
                 syncCount: syncCount
             };
 

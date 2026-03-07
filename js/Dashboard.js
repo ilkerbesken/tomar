@@ -2540,14 +2540,18 @@ class Dashboard {
                 if (res.success && res.syncCount > 0) {
                     await this.initAsync();
                 }
-            }, 5000); // 5 saniye sonra eşitle
+            }, 3000); // 3 saniye sonra eşitle
         };
 
         window.fileSystemManager.onRemove = () => {
             if (syncTimer) clearTimeout(syncTimer);
             syncTimer = setTimeout(async () => {
-                await cloud.syncWithGoogleDrive();
-            }, 5000);
+                console.log('[AutoSync] Silme algılandı, bulut güncelleniyor...');
+                const res = await cloud.syncWithGoogleDrive();
+                if (res.success && res.syncCount > 0) {
+                    await this.initAsync();
+                }
+            }, 3000);
         };
 
         // 2. Auto-Pull (Polling)
