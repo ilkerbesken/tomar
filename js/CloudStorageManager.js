@@ -594,12 +594,12 @@ class CloudStorageManager {
                 if (now - createdTime < 120000) continue; 
 
                 if (type === 'board') {
-                    // Board artık manifest'te yoksa sil
-                    if (!boardId || !boardIds.has(boardId)) shouldDelete = true;
+                    // Sadece 'boardId'si olan ve listede olmayanları sil
+                    if (boardId && !boardIds.has(boardId)) shouldDelete = true;
                 } else if (type === 'folder') {
-                    // Klasör artık manifest'te yoksa sil (Tomar ve .settings klasörlerini koru)
-                    if (file.name !== 'Tomar' && file.name !== '.settings') {
-                        if (!folderId || !folderIds.has(folderId)) shouldDelete = true;
+                    // Sadece 'folderId'si olan ve listede olmayanları sil (Önemli klasörleri koru)
+                    if (folderId && file.name !== 'Tomar' && file.name !== '.settings') {
+                        if (!folderIds.has(folderId)) shouldDelete = true;
                     }
                 }
 

@@ -245,6 +245,10 @@ class Dashboard {
     }
 
     async saveDataAsync(key, value) {
+        if (!key || key.includes('null') || key.includes('undefined')) {
+            console.warn('[Dashboard] Geçersiz anahtar engellendi:', key);
+            return;
+        }
         await window.fileSystemManager.saveItem(key, value);
     }
 
