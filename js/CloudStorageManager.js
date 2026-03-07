@@ -1,7 +1,15 @@
 // ============================================================
-// CloudStorageManager.js
-// Masaüstü'ndeki mevcut depolamaya dokunmaz.
-// Mobil/tablet için ek seçenekler sunar.
+// CloudStorageManager.js  v2.0
+//
+// Google Drive yapısı:
+//   Tomar/
+//     .settings/
+//       tomar-manifest.json   ← Seçenek A: JSON yedek + meta
+//     Klasör Adı/             ← Gerçek Drive klasörleri
+//       Alt Klasör/
+//         not-adı.tom
+//       not-adı.tom
+//     köksüz-not.tom          ← Klasörsüz boardlar kök dizinde
 // ============================================================
 
 class CloudStorageManager {
@@ -12,9 +20,13 @@ class CloudStorageManager {
         this.gisLoaded = false;
         this.gdriveToken = localStorage.getItem('tomar_gdrive_token');
         this.isSyncing = false;
+
+        // Drive klasör ID önbelleği: path → driveId
+        // Örn: "Tomar" → "1abc...", "Tomar/Proje" → "2def..."
+        this._folderIdCache = {};
     }
 
-    // ─── Platform Tespiti ───────────────────────────────────────
+    // ─── Platform Tespiti ────────────────────────────────────────
     static detect() {
         const ua = navigator.userAgent;
         const isIOS = /iPad|iPhone|iPod/.test(ua) ||
@@ -31,7 +43,6 @@ class CloudStorageManager {
             const json = JSON.stringify(data, null, 2);
             const blob = new Blob([json], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
-
             const a = document.createElement('a');
             a.href = url;
             a.download = `tomar-yedek-${new Date().toISOString().slice(0, 10)}.json`;
@@ -39,10 +50,8 @@ class CloudStorageManager {
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-
-            return { success: true, message: 'Dosya indirildi. Dosyalar uygulamasından iCloud\'a taşıyabilirsiniz.' };
+            return { success: true };
         } catch (err) {
-            console.error('Export hatası:', err);
             return { success: false, message: err.message };
         }
     }
@@ -53,11 +62,9 @@ class CloudStorageManager {
             const input = document.createElement('input');
             input.type = 'file';
             input.accept = '.json,application/json';
-
             input.onchange = async (e) => {
                 const file = e.target.files[0];
                 if (!file) return resolve({ success: false, message: 'Dosya seçilmedi.' });
-
                 const reader = new FileReader();
                 reader.onload = async (ev) => {
                     try {
@@ -65,30 +72,25 @@ class CloudStorageManager {
                         await this._applyImportedData(data);
                         resolve({ success: true, message: 'Veriler başarıyla yüklendi!' });
                     } catch (err) {
-                        resolve({ success: false, message: 'Geçersiz dosya formatı: ' + err.message });
+                        resolve({ success: false, message: 'Geçersiz dosya: ' + err.message });
                     }
                 };
                 reader.onerror = () => resolve({ success: false, message: 'Dosya okunamadı.' });
                 reader.readAsText(file);
             };
-
             document.body.appendChild(input);
             input.click();
             document.body.removeChild(input);
         });
     }
 
-    // ─── Google Drive: GIS Script Yükle ──────────────────────────
+    // ─── Google Identity Services ────────────────────────────────
     async _initGIS() {
         if (this.gisLoaded) return;
-
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
             script.src = 'https://accounts.google.com/gsi/client';
-            script.onload = () => {
-                this.gisLoaded = true;
-                resolve();
-            };
+            script.onload = () => { this.gisLoaded = true; resolve(); };
             script.onerror = () => reject(new Error('Google Identity Services yüklenemedi.'));
             document.head.appendChild(script);
         });
@@ -96,7 +98,6 @@ class CloudStorageManager {
 
     async signInGoogle() {
         await this._initGIS();
-
         return new Promise((resolve, reject) => {
             // eslint-disable-next-line no-undef
             const client = google.accounts.oauth2.initTokenClient({
@@ -123,111 +124,379 @@ class CloudStorageManager {
     }
 
     async _ensureToken() {
-        if (!this.gdriveToken) {
-            await this.signInGoogle();
-        }
+        if (!this.gdriveToken) await this.signInGoogle();
     }
 
-    // ─── Google Drive: Senkronizasyon (Bidirectional) ────────────
+    // ─── Ana Senkronizasyon ───────────────────────────────────────
     async syncWithGoogleDrive() {
         if (this.isSyncing) return { success: false, message: 'Senkronizasyon zaten sürüyor.' };
         this.isSyncing = true;
+        this._folderIdCache = {}; // Her sync'te önbelleği sıfırla
 
         try {
             await this._ensureToken();
             const fsm = window.fileSystemManager;
-            const folderId = await this._getOrCreateTomarFolder();
-            let syncCount = 0;
 
-            // 1. PULL: Buluttaki manifesti kontrol et
-            const remoteManifestFile = await this._findFileInFolder('tomar-manifest.json', folderId);
+            // Kök "Tomar" klasörünü al/oluştur
+            const tomarFolderId = await this._getOrCreateDriveFolder('Tomar', null);
+
+            // ── PULL: Drive'daki .settings/tomar-manifest.json'u oku ──
+            let syncCount = 0;
+            const settingsFolderId = await this._getOrCreateDriveFolder('.settings', tomarFolderId);
+            const remoteManifestFile = await this._findFileInFolder('tomar-manifest.json', settingsFolderId);
+
             if (remoteManifestFile) {
                 try {
-                    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${remoteManifestFile.id}?alt=media`, {
-                        headers: { Authorization: `Bearer ${this.gdriveToken}` }
-                    });
+                    const res = await fetch(
+                        `https://www.googleapis.com/drive/v3/files/${remoteManifestFile.id}?alt=media`,
+                        { headers: { Authorization: `Bearer ${this.gdriveToken}` } }
+                    );
                     const remoteManifest = await res.json();
                     const localBoards = await fsm.getItem('wb_boards', []);
 
                     for (const rb of (remoteManifest.boards || [])) {
                         const lb = localBoards.find(b => b.id === rb.id);
-                        if (!lb || (rb.lastModified > (lb.lastModified || 0))) {
-                            const bFile = await this._findFileInFolder(`board_${rb.id}.json`, folderId);
-                            if (bFile) {
-                                const bRes = await fetch(`https://www.googleapis.com/drive/v3/files/${bFile.id}?alt=media`, {
-                                    headers: { Authorization: `Bearer ${this.gdriveToken}` }
-                                });
-                                const bContent = await bRes.json();
-                                // skipNative=true to avoid double native writes if mode is native
-                                await fsm.saveItem(`wb_content_${rb.id}`, bContent, true);
-                                await fsm.setSyncMetadata(rb.id, {
-                                    googleDriveFileId: bFile.id,
-                                    lastSyncedTime: Date.now(),
-                                    lastModifiedLocally: rb.lastModified
-                                });
+                        if (!lb || rb.lastModified > (lb.lastModified || 0)) {
+                            // .tom dosyasını Drive'dan indir
+                            const tomContent = await this._downloadBoardTom(rb, remoteManifest.folders || [], tomarFolderId);
+                            if (tomContent) {
+                                await fsm.saveItem(`wb_content_${rb.id}`, tomContent, true);
                                 syncCount++;
                             }
                         }
                     }
-                    if (syncCount > 0) {
-                        await fsm.saveItem('wb_boards', remoteManifest.boards, true);
-                        await fsm.saveItem('wb_folders', remoteManifest.folders, true);
-                        await fsm.saveItem('wb_view_settings', remoteManifest.viewSettings, true);
+
+                    if (syncCount > 0 || !localBoards.length) {
+                        if (remoteManifest.boards?.length) {
+                            await fsm.saveItem('wb_boards', remoteManifest.boards, true);
+                            await fsm.saveItem('wb_folders', remoteManifest.folders || [], true);
+                            if (remoteManifest.viewSettings) {
+                                await fsm.saveItem('wb_view_settings', remoteManifest.viewSettings, true);
+                            }
+                        }
                     }
-                } catch(e) { console.error('[Sync] Pull failed', e); }
+                } catch (e) {
+                    console.error('[CloudSync] Pull hatası:', e);
+                }
             }
 
-            // 2. PUSH: Yerelde değişenleri yükle
+            // ── PUSH: Yereldeki değişiklikleri Drive'a yükle ──
             const boards = await fsm.getItem('wb_boards', []);
+            const folders = await fsm.getItem('wb_folders', []);
+
+            // Uygulama klasör yapısını Drive'da yansıt
+            await this._ensureDriveFolders(folders, tomarFolderId);
+
             for (const board of boards) {
                 let meta = await fsm.getSyncMetadata(board.id);
                 if (!meta) {
                     await fsm.updateSyncMetadata(board.id);
                     meta = await fsm.getSyncMetadata(board.id);
                 }
-                if (!meta.googleDriveFileId || (meta.lastModifiedLocally > meta.lastSyncedTime)) {
+
+                const needsUpload = !meta.googleDriveFileId ||
+                    (meta.lastModifiedLocally > meta.lastSyncedTime);
+
+                if (needsUpload) {
                     const content = await fsm.getItem(`wb_content_${board.id}`, null);
                     if (content) {
-                        const fId = await this._uploadBoardToDrive(board, content, folderId, meta.googleDriveFileId);
-                        await fsm.setSyncMetadata(board.id, { googleDriveFileId: fId, lastSyncedTime: Date.now() });
+                        const driveFileId = await this._uploadBoardTom(board, content, folders, tomarFolderId, meta.googleDriveFileId);
+                        await fsm.setSyncMetadata(board.id, {
+                            googleDriveFileId: driveFileId,
+                            lastSyncedTime: Date.now()
+                        });
                         syncCount++;
                     }
                 }
             }
 
-            // 3. Manifesti güncelle
-            await this._syncManifest(folderId);
-            return { success: true, message: syncCount > 0 ? `${syncCount} öğe eşitlendi.` : 'Her şey güncel.' };
+            // ── Seçenek A: .settings/tomar-manifest.json'u güncelle ──
+            await this._syncManifest(settingsFolderId);
+
+            return {
+                success: true,
+                message: syncCount > 0 ? `${syncCount} dosya eşitlendi.` : 'Her şey güncel.'
+            };
 
         } catch (err) {
-            console.error('[Sync] Hata:', err);
+            console.error('[CloudSync] Genel hata:', err);
+            if (err.message?.includes('401') || err.message?.includes('token')) {
+                this.gdriveToken = null;
+                localStorage.removeItem('tomar_gdrive_token');
+            }
             return { success: false, message: err.message };
         } finally {
             this.isSyncing = false;
         }
     }
 
-    async _syncManifest(folderId) {
+    async saveToGoogleDrive() {
+        return this.syncWithGoogleDrive();
+    }
+
+    async loadFromGoogleDrive() {
+        return this.syncWithGoogleDrive();
+    }
+
+    // ─── Drive Klasör Yönetimi ────────────────────────────────────
+
+    /**
+     * Drive'da tek bir klasör bul veya oluştur.
+     * @param {string} name  Klasör adı
+     * @param {string|null} parentId  Üst klasör Drive ID'si (null → root)
+     */
+    async _getOrCreateDriveFolder(name, parentId) {
+        const cacheKey = parentId ? `${parentId}/${name}` : name;
+        if (this._folderIdCache[cacheKey]) return this._folderIdCache[cacheKey];
+
+        const headers = { Authorization: `Bearer ${this.gdriveToken}` };
+        const folderMime = 'application/vnd.google-apps.folder';
+
+        let q = `name='${name.replace(/'/g, "\\'")}' and mimeType='${folderMime}' and trashed=false`;
+        if (parentId) q += ` and '${parentId}' in parents`;
+
+        const searchUrl = 'https://www.googleapis.com/drive/v3/files?' +
+            new URLSearchParams({ q, fields: 'files(id,name)' }).toString();
+
+        const searchRes = await fetch(searchUrl, { headers });
+        if (!searchRes.ok) {
+            if (searchRes.status === 401) {
+                this.gdriveToken = null;
+                localStorage.removeItem('tomar_gdrive_token');
+            }
+            throw new Error(`Drive bağlantı hatası: ${searchRes.status}`);
+        }
+
+        const data = await searchRes.json();
+        if (data.files?.length > 0) {
+            this._folderIdCache[cacheKey] = data.files[0].id;
+            return data.files[0].id;
+        }
+
+        // Oluştur
+        const body = { name, mimeType: folderMime };
+        if (parentId) body.parents = [parentId];
+
+        const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        if (!createRes.ok) throw new Error(`Klasör oluşturulamadı: ${name}`);
+        const folder = await createRes.json();
+        this._folderIdCache[cacheKey] = folder.id;
+        return folder.id;
+    }
+
+    /**
+     * Uygulama klasör hiyerarşisini Drive'da yansıt.
+     * Her uygulama klasörü → Drive'da bir alt klasör.
+     * Sonuç: { appFolderId → driveId } haritası döner.
+     */
+    async _ensureDriveFolders(folders, tomarFolderId) {
+        const appFolderToDriveId = {}; // appFolderId → driveId
+
+        // Kök klasörler önce, sonra alt klasörler (parentId zincirini çözmek için)
+        const sorted = this._sortFoldersByDepth(folders);
+
+        for (const folder of sorted) {
+            const safeName = this._sanitizeName(folder.name) || folder.id;
+            let parentDriveId = tomarFolderId;
+
+            if (folder.parentId && appFolderToDriveId[folder.parentId]) {
+                parentDriveId = appFolderToDriveId[folder.parentId];
+            }
+
+            const driveId = await this._getOrCreateDriveFolder(safeName, parentDriveId);
+            appFolderToDriveId[folder.id] = driveId;
+        }
+
+        return appFolderToDriveId;
+    }
+
+    /**
+     * Klasörleri derinliğe göre sırala (üstten alta doğru).
+     */
+    _sortFoldersByDepth(folders) {
+        const getDepth = (folder, visited = new Set()) => {
+            if (!folder.parentId || visited.has(folder.id)) return 0;
+            visited.add(folder.id);
+            const parent = folders.find(f => f.id === folder.parentId);
+            return parent ? 1 + getDepth(parent, visited) : 0;
+        };
+        return [...folders].sort((a, b) => getDepth(a) - getDepth(b));
+    }
+
+    // ─── .tom Dosyası Yükleme (PUSH) ─────────────────────────────
+
+    /**
+     * Bir board'un içeriğini .tom formatında Drive'a yükle.
+     * Board'un klasörüne göre doğru Drive alt klasörünü kullanır.
+     */
+    async _uploadBoardTom(board, content, folders, tomarFolderId, existingFileId) {
+        // Hedef Drive klasörünü bul
+        const targetFolderId = await this._getDriveTargetFolder(board, folders, tomarFolderId);
+
+        const safeName = this._sanitizeName(board.name) || board.id;
+        const fileName = board.isPDF ? `${safeName}.pdf.tom` : `${safeName}.tom`;
+
+        // .tom formatında sıkıştır (pako/gzip)
+        const tomBytes = await this._contentToTom(content);
+
+        return await this._uploadRawToDrive(fileName, tomBytes, 'application/octet-stream', targetFolderId, existingFileId);
+    }
+
+    /**
+     * Board'un Drive'daki hedef klasör ID'sini döndür.
+     */
+    async _getDriveTargetFolder(board, folders, tomarFolderId) {
+        if (!board.folderId) return tomarFolderId;
+
+        // Klasör zincirini çöz
+        const folderPath = this._getFolderPathNames(board.folderId, folders);
+        let currentParent = tomarFolderId;
+        for (const name of folderPath) {
+            currentParent = await this._getOrCreateDriveFolder(name, currentParent);
+        }
+        return currentParent;
+    }
+
+    /**
+     * Klasörün adını (ve üstlerinin adlarını) döndür.
+     * @returns {string[]} ['Proje', 'Alt Klasör']
+     */
+    _getFolderPathNames(folderId, folders) {
+        const folder = folders.find(f => f.id === folderId);
+        if (!folder) return [];
+        const safeName = this._sanitizeName(folder.name) || folderId;
+        if (!folder.parentId) return [safeName];
+        return [...this._getFolderPathNames(folder.parentId, folders), safeName];
+    }
+
+    /**
+     * Board içeriğini .tom (gzip) byte dizisine dönüştür.
+     */
+    async _contentToTom(content) {
+        // pako beklenmiyorsa yükle
+        if (typeof pako === 'undefined') {
+            await new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = 'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js';
+                s.onload = resolve;
+                s.onerror = reject;
+                document.head.appendChild(s);
+            });
+        }
+
+        const jsonStr = JSON.stringify({
+            version: content.version || '2.1',
+            format: 'tom',
+            savedAt: new Date().toISOString(),
+            pages: content.pages || null,
+            objects: content.objects || null
+        });
+
+        return pako.gzip(jsonStr);
+    }
+
+    // ─── .tom Dosyası İndirme (PULL) ─────────────────────────────
+
+    /**
+     * Bir board'un .tom dosyasını Drive'dan indir ve içeriği parse et.
+     */
+    async _downloadBoardTom(boardMeta, folders, tomarFolderId) {
+        try {
+            // Önce .tom dosyasını ara
+            const targetFolderId = await this._getDriveTargetFolder(boardMeta, folders, tomarFolderId);
+            const safeName = this._sanitizeName(boardMeta.name) || boardMeta.id;
+            const fileName = boardMeta.isPDF ? `${safeName}.pdf.tom` : `${safeName}.tom`;
+
+            const fileInfo = await this._findFileInFolder(fileName, targetFolderId);
+            if (!fileInfo) return null;
+
+            const res = await fetch(
+                `https://www.googleapis.com/drive/v3/files/${fileInfo.id}?alt=media`,
+                { headers: { Authorization: `Bearer ${this.gdriveToken}` } }
+            );
+
+            const arrayBuffer = await res.arrayBuffer();
+            const uint8 = new Uint8Array(arrayBuffer);
+
+            // pako ile decompress
+            if (typeof pako === 'undefined') {
+                await new Promise((resolve, reject) => {
+                    const s = document.createElement('script');
+                    s.src = 'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js';
+                    s.onload = resolve; s.onerror = reject;
+                    document.head.appendChild(s);
+                });
+            }
+
+            let jsonStr;
+            if (uint8[0] === 0x1f && uint8[1] === 0x8b) {
+                jsonStr = pako.inflate(uint8, { to: 'string' });
+            } else {
+                jsonStr = new TextDecoder().decode(uint8);
+            }
+
+            return JSON.parse(jsonStr);
+        } catch (e) {
+            console.warn('[CloudSync] .tom indirme hatası:', e);
+            return null;
+        }
+    }
+
+    // ─── Seçenek A: Manifest ──────────────────────────────────────
+
+    /**
+     * .settings/tomar-manifest.json'u güncelle.
+     * Board listesi, klasör yapısı, ve tüm meta verileri içerir.
+     */
+    async _syncManifest(settingsFolderId) {
         const fsm = window.fileSystemManager;
         const manifest = {
+            version: 2,
+            syncedAt: new Date().toISOString(),
             boards: await fsm.getItem('wb_boards', []),
             folders: await fsm.getItem('wb_folders', []),
             viewSettings: await fsm.getItem('wb_view_settings', {}),
             customCovers: await fsm.getItem('wb_custom_covers', [])
         };
+
         const fileName = 'tomar-manifest.json';
-        const existing = await this._findFileInFolder(fileName, folderId);
-        await this._uploadToDrive(fileName, manifest, folderId, existing?.id);
+        const existing = await this._findFileInFolder(fileName, settingsFolderId);
+        const jsonBytes = new TextEncoder().encode(JSON.stringify(manifest, null, 2));
+        await this._uploadRawToDrive(fileName, jsonBytes, 'application/json', settingsFolderId, existing?.id);
     }
 
-    async _uploadBoardToDrive(board, content, folderId, existingFileId) {
-        const fileName = `board_${board.id}.json`;
-        return await this._uploadToDrive(fileName, content, folderId, existingFileId);
+    // ─── Drive Dosya İşlemleri (Düşük Seviye) ────────────────────
+
+    /**
+     * Bir klasör içinde dosya ara.
+     */
+    async _findFileInFolder(fileName, folderId) {
+        const headers = { Authorization: `Bearer ${this.gdriveToken}` };
+        const q = `name='${fileName.replace(/'/g, "\\'")}' and '${folderId}' in parents and trashed=false`;
+        const url = 'https://www.googleapis.com/drive/v3/files?' +
+            new URLSearchParams({ q, fields: 'files(id,name)' }).toString();
+
+        const res = await fetch(url, { headers });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data.files?.[0] || null;
     }
 
-    async _uploadToDrive(fileName, data, folderId, existingFileId) {
-        const metadata = existingFileId ? { name: fileName } : { name: fileName, parents: [folderId] };
-        const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    /**
+     * Ham byte dizisini Drive'a yükle (multipart upload).
+     * @returns {string} Drive file ID
+     */
+    async _uploadRawToDrive(fileName, bytes, mimeType, folderId, existingFileId) {
+        const metadata = existingFileId
+            ? { name: fileName }
+            : { name: fileName, parents: [folderId] };
+
+        const blob = new Blob([bytes], { type: mimeType });
         const form = new FormData();
         form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
         form.append('file', blob);
@@ -239,63 +508,27 @@ class CloudStorageManager {
         const res = await fetch(url, {
             method: existingFileId ? 'PATCH' : 'POST',
             headers: { Authorization: `Bearer ${this.gdriveToken}` },
-            body: form,
+            body: form
         });
 
-        if (!res.ok) throw new Error(`Drive upload failed: ${res.status}`);
+        if (!res.ok) {
+            const err = await res.text();
+            throw new Error(`Drive yükleme hatası (${res.status}): ${err.slice(0, 200)}`);
+        }
+
         const result = await res.json();
         return result.id;
     }
 
-    async saveToGoogleDrive() {
-        return this.syncWithGoogleDrive();
-    }
+    // ─── Yardımcı Metotlar ────────────────────────────────────────
 
-    async loadFromGoogleDrive() {
-        // Full manual pull
-        return this.syncWithGoogleDrive();
-    }
-
-    // ─── Yardımcı: Tomar klasörünü bul veya oluştur ───────────────
-    async _getOrCreateTomarFolder() {
-        const headers = { Authorization: `Bearer ${this.gdriveToken}` };
-        const folderName = 'Tomar';
-        const folderMime = 'application/vnd.google-apps.folder';
-
-        const searchQuery = `name='${folderName}' and mimeType='${folderMime}' and trashed=false`;
-        const searchUrl = 'https://www.googleapis.com/drive/v3/files?' +
-            new URLSearchParams({ q: searchQuery, fields: 'files(id,name)' }).toString();
-
-        const searchRes = await fetch(searchUrl, { headers });
-        if (!searchRes.ok) {
-            this.gdriveToken = null;
-            localStorage.removeItem('tomar_gdrive_token');
-            throw new Error(`Google Drive bağlantısı kesildi.`);
-        }
-
-        const searchData = await searchRes.json();
-        if (searchData.files?.length > 0) return searchData.files[0].id;
-
-        const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
-            method: 'POST',
-            headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: folderName, mimeType: folderMime })
-        });
-        const folder = await createRes.json();
-        return folder.id;
-    }
-
-    async _findFileInFolder(fileName, folderId) {
-        const headers = { Authorization: `Bearer ${this.gdriveToken}` };
-        const query = `name='${fileName}' and '${folderId}' in parents and trashed=false`;
-        const url = 'https://www.googleapis.com/drive/v3/files?' +
-            new URLSearchParams({ q: query, fields: 'files(id,name)' }).toString();
-
-        const res = await fetch(url, { headers });
-        if (!res.ok) return null;
-
-        const data = await res.json();
-        return data.files?.[0] || null;
+    _sanitizeName(name) {
+        if (!name) return '';
+        return name
+            .replace(/[\\/:*?"<>|]/g, '_')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .substring(0, 100);
     }
 
     async _collectAllData() {
@@ -317,6 +550,7 @@ class CloudStorageManager {
         if (data.boards) await fsm.saveItem('wb_boards', data.boards);
         if (data.folders) await fsm.saveItem('wb_folders', data.folders);
         if (data.viewSettings) await fsm.saveItem('wb_view_settings', data.viewSettings);
+        if (data.customCovers) await fsm.saveItem('wb_custom_covers', data.customCovers);
         if (data.contents) {
             for (const [boardId, content] of Object.entries(data.contents)) {
                 await fsm.saveItem(`wb_content_${boardId}`, content);
