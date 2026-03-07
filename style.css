@@ -1175,6 +1175,31 @@ input[type="range"] {
     /* Initial hue */
 }
 
+.tom-file-preview img {
+    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.1));
+    transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.board-card:hover .tom-file-preview img {
+    transform: scale(1.1) translateY(-5px);
+}
+
+.tag-tom {
+    background: #e7f5ff;
+    color: #1971c2;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
+    border: 1px solid #d0e7ff;
+    text-transform: uppercase;
+}
+
+.tree-note-item .note-icon, .nav-section .note-icon {
+    flex-shrink: 0;
+}
+
 .picker-sb-gradient-white {
     position: absolute;
     top: 0;

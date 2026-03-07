@@ -313,7 +313,7 @@ class Dashboard {
                     noteItem.className = `tree-note-item ${this.currentBoardId === note.id ? 'active' : ''}`;
                     noteItem.innerHTML = `
                         <div style="display: flex; align-items: center; gap: 8px; flex: 1; overflow: hidden;">
-                            <img src="assets/icons/pages.svg" class="note-icon">
+                            <img src="assets/icons/dot-tom.svg" class="note-icon" style="width: 14px; height: 14px;">
                             <span class="note-name" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${note.name}</span>
                         </div>
                         <div class="folder-menu-trigger">⋮</div>
@@ -557,7 +557,7 @@ class Dashboard {
                         noteItem.style.paddingLeft = `${32 + level * 20}px`;
                         noteItem.innerHTML = `
                             <div style="display: flex; align-items: center; gap: 8px; flex: 1; overflow: hidden;">
-                                <img src="assets/icons/pages.svg" class="note-icon">
+                                <img src="assets/icons/dot-tom.svg" class="note-icon" style="width: 14px; height: 14px;">
                                 <span class="note-name" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${note.name}</span>
                             </div>
                             <div class="folder-menu-trigger">⋮</div>
@@ -634,9 +634,9 @@ class Dashboard {
         if (!this.boardGrid) return;
         this.boardGrid.innerHTML = '';
 
-        // Refresh data to ensure we have latest states
-        const loadedBoards = this.loadData('wb_boards', []);
-        this.boards = Array.isArray(loadedBoards) ? loadedBoards : [];
+        // Use in-memory boards (already up-to-date after any mutation).
+        // Do NOT reload from localStorage here — saveData is async and may lag.
+        if (!Array.isArray(this.boards)) this.boards = [];
 
         let filtered = [];
 
@@ -721,6 +721,24 @@ class Dashboard {
             const coverBg = board.coverBg || '#4a90e2';
             const coverTexture = board.coverTexture || 'linear';
 
+            // Determine if we're in "file mode" (local native FS or Google Drive)
+            // In file mode: show dot-tom.svg icon
+            // In web/PWA mode (indexeddb, no GDrive): show colorful notebook cover
+            const isFileMode = (window.fileSystemManager?.mode === 'native') ||
+                               !!localStorage.getItem('tomar_gdrive_token');
+
+            const notebookCoverHTML = isFileMode
+                ? `<div class="tom-file-preview" style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;">
+                        ${board.isPDF
+                            ? `<img src="assets/icons/pdf.svg" style="width: 64px; height: 64px; opacity: 0.8;">`
+                            : `<img src="assets/icons/dot-tom.svg" style="width: 80px; height: 80px;">`
+                        }
+                   </div>`
+                : `<div class="notebook-cover ${hasImage ? '' : `cover-texture-${coverTexture}`}"
+                         style="background-color: ${coverBg}; ${hasImage ? `background-image: url(${board.coverImage}); background-size: cover; background-position: center;` : ''}">
+                        <div class="notebook-spine"></div>
+                   </div>`;
+
             card.innerHTML = `
                 <div class="board-selection" onclick="event.stopPropagation()">
                     <input type="checkbox" class="board-checkbox" 
@@ -728,16 +746,14 @@ class Dashboard {
                 </div>
 
                 <div class="notebook-container">
-                    <div class="notebook-cover ${hasImage ? '' : `cover-texture-${coverTexture}`}" 
-                         style="background-color: ${coverBg}; ${hasImage ? `background-image: url(${board.coverImage}); background-size: cover; background-position: center;` : ''}">
-                        <div class="notebook-spine"></div>
-                    </div>
+                    ${notebookCoverHTML}
                 </div>
 
                 <div class="board-info">
                     <div class="board-title" contenteditable="true" spellcheck="false">${board.name}</div>
                     <div class="board-meta">
                         <span>${new Date(board.lastModified).toLocaleDateString()}</span>
+                        ${board.isTomFile ? '<span class="tag-tom">.tom</span>' : ''}
                     </div>
                 </div>
             `;
