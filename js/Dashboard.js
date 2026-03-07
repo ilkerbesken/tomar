@@ -313,7 +313,7 @@ class Dashboard {
                     noteItem.className = `tree-note-item ${this.currentBoardId === note.id ? 'active' : ''}`;
                     noteItem.innerHTML = `
                         <div style="display: flex; align-items: center; gap: 8px; flex: 1; overflow: hidden;">
-                            <img src="assets/icons/dot-tom.svg" class="note-icon" style="width: 14px; height: 14px;">
+                            <img src="assets/icons/text.svg" class="note-icon" style="width: 14px; height: 14px; opacity: 0.6;">
                             <span class="note-name" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${note.name}</span>
                         </div>
                         <div class="folder-menu-trigger">⋮</div>
@@ -557,7 +557,7 @@ class Dashboard {
                         noteItem.style.paddingLeft = `${32 + level * 20}px`;
                         noteItem.innerHTML = `
                             <div style="display: flex; align-items: center; gap: 8px; flex: 1; overflow: hidden;">
-                                <img src="assets/icons/dot-tom.svg" class="note-icon" style="width: 14px; height: 14px;">
+                                <img src="assets/icons/text.svg" class="note-icon" style="width: 14px; height: 14px; opacity: 0.6;">
                                 <span class="note-name" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${note.name}</span>
                             </div>
                             <div class="folder-menu-trigger">⋮</div>
@@ -721,20 +721,12 @@ class Dashboard {
             const coverBg = board.coverBg || '#4a90e2';
             const coverTexture = board.coverTexture || 'linear';
 
-            // PWA veya Web modunda (Google Drive dahil) her zaman renkli kapaklar gösterilir.
-            // dot-tom.svg sadece 'native' yerel klasör modunda, tarayıcı dışı/saf yerel kullanımda tercih edilir.
-            const isPWA = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
-            const isFileMode = (window.fileSystemManager?.mode === 'native') && !isPWA;
-
-            const notebookCoverHTML = isFileMode
-                ? `<div class="tom-file-preview" style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;">
-                        ${board.isPDF
-                            ? `<img src="assets/icons/pdf.svg" style="width: 64px; height: 64px; opacity: 0.8;">`
-                            : `<img src="assets/icons/dot-tom.svg" style="width: 80px; height: 80px;">`
-                        }
-                   </div>`
-                : `<div class="notebook-cover ${hasImage ? '' : `cover-texture-${coverTexture}`}"
+            const notebookCoverHTML = `<div class="notebook-cover ${hasImage ? '' : `cover-texture-${coverTexture}`}"
                          style="background-color: ${coverBg}; ${hasImage ? `background-image: url(${board.coverImage}); background-size: cover; background-position: center;` : ''}">
+                        ${board.isPDF 
+                            ? `<img src="assets/icons/pdf.svg" style="width: 64px; height: 64px; opacity: 0.8; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));">`
+                            : ''
+                        }
                         <div class="notebook-spine"></div>
                    </div>`;
 
