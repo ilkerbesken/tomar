@@ -879,27 +879,39 @@ class Dashboard {
             const mode = window.fileSystemManager.mode;
             const hasDir = !!window.fileSystemManager.dirHandle;
             const hasStored = !!window.fileSystemManager.storedHandle;
+            const isSupported = !!window.showDirectoryPicker;
 
+            // 1. Durum Metni
             if (mode === 'native' && hasDir) {
                 statusText.innerHTML = `Mevcut Konum: <strong style="color: #2b8a3e">Yerel Klasör (${window.fileSystemManager.dirHandle.name})</strong>`;
-                btnPick.textContent = 'Konumu Değiştir';
-                btnPick.className = 'btn btn-primary';
             } else if (mode === 'native' && hasStored) {
                 statusText.innerHTML = `Mevcut Konum: <strong style="color: #f08c00">İzin Bekleniyor (${window.fileSystemManager.storedHandle.name})</strong>`;
-                btnPick.textContent = 'Erişime İzin Ver';
-                btnPick.className = 'btn btn-warning';
-            } else if (mode === 'native') {
-                statusText.innerHTML = `Mevcut Konum: <strong>Tarayıcı Depolaması</strong>`;
-                btnPick.textContent = 'Yerel Klasör Seç veya Oluştur';
-                btnPick.className = 'btn btn-primary';
             } else {
                 statusText.innerHTML = `Mevcut Konum: <strong>Tarayıcı Veritabanı (IndexedDB)</strong>`;
-                btnPick.style.display = 'none';
             }
 
-            // Support note for non-chromium
+            // 2. Buton ve Destek Notu Yönetimi
             const supportNote = document.getElementById('folderPickerSupportNote');
-            if (supportNote) supportNote.style.display = (mode === 'indexeddb') ? 'block' : 'none';
+            if (isSupported) {
+                btnPick.style.display = 'flex';
+                if (hasDir) {
+                    btnPick.innerHTML = '<img src="assets/icons/folder.svg" style="width: 16px; margin-right: 8px; filter: brightness(0) invert(1);"> Klasörü Değiştir';
+                    btnPick.className = 'btn btn-primary';
+                } else if (hasStored) {
+                    btnPick.innerHTML = '<img src="assets/icons/folder.svg" style="width: 16px; margin-right: 8px; filter: brightness(0) invert(1);"> Erişime İzin Ver';
+                    btnPick.className = 'btn btn-warning';
+                } else {
+                    btnPick.innerHTML = '<img src="assets/icons/folder.svg" style="width: 16px; margin-right: 8px; filter: brightness(0) invert(1);"> Yerel Klasör Seç veya Oluştur';
+                    btnPick.className = 'btn btn-primary';
+                }
+                if (supportNote) supportNote.style.display = 'none';
+            } else {
+                btnPick.style.display = 'none';
+                if (supportNote) supportNote.style.display = 'block';
+            }
+
+            // 3. Sıfırla Butonu
+            btnReset.style.display = (mode === 'native' || hasStored) ? 'flex' : 'none';
 
             // ─── Mobil bölümünü göster/gizle ─────────────────────
             const mobileSection = document.getElementById('mobile-storage-section');
@@ -941,12 +953,13 @@ class Dashboard {
         };
 
         btnReset.onclick = async () => {
-            if (confirm('Depolama konumunu tarayıcıya geri döndürmek istediğinize emin misiniz?')) {
-                const tx = window.fileSystemManager.db.transaction('settings', 'readwrite');
-                tx.objectStore('settings').delete('folder_handle');
+            if (confirm('Depolama konumunu tarayıcıya geri döndürmek istediğinize emin misiniz? (Mevcut verileriniz silinmez, sadece tarayıcı içinde saklanmaya devam eder)')) {
+                await window.fileSystemManager.db.settings.delete('folder_handle');
                 window.fileSystemManager.dirHandle = null;
+                window.fileSystemManager.storedHandle = null;
+                window.fileSystemManager.mode = 'indexeddb';
                 updateStatusUI();
-                this.initAsync();
+                await this.initAsync();
             }
         };
 
