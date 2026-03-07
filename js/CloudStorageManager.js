@@ -213,6 +213,10 @@ class CloudStorageManager {
             // ── Seçenek A: .settings/tomar-manifest.json'u güncelle ──
             await this._syncManifest(settingsFolderId);
 
+            // ── ÇÖP TOPLAMA (Garbage Collection) ──────────────────
+            // Drive'da olup manifest'te olmayan dosyaları sil
+            await this._garbageCollect(tomarFolderId, boards, folders);
+
             return {
                 success: true,
                 message: syncCount > 0 ? `${syncCount} dosya eşitlendi.` : 'Her şey güncel.'
@@ -245,13 +249,36 @@ class CloudStorageManager {
      * @param {string} name  Klasör adı
      * @param {string|null} parentId  Üst klasör Drive ID'si (null → root)
      */
-    async _getOrCreateDriveFolder(name, parentId) {
-        const cacheKey = parentId ? `${parentId}/${name}` : name;
+    async _getOrCreateDriveFolder(name, parentId, appFolderId = null) {
+        const cacheKey = appFolderId ? appFolderId : (parentId ? `${parentId}/${name}` : name);
         if (this._folderIdCache[cacheKey]) return this._folderIdCache[cacheKey];
 
         const headers = { Authorization: `Bearer ${this.gdriveToken}` };
         const folderMime = 'application/vnd.google-apps.folder';
 
+        // Önce ID ile ara (eğer varsa, rename durumunu yakalamak için)
+        if (appFolderId) {
+            const qId = `appProperties has { key='folderId' and value='${appFolderId}' } and trashed=false`;
+            const resId = await fetch('https://www.googleapis.com/drive/v3/files?' + new URLSearchParams({ q: qId, fields: 'files(id,name,parents)' }).toString(), { headers });
+            if (resId.ok) {
+                const dataId = await resId.json();
+                if (dataId.files?.length > 0) {
+                    const driveFolder = dataId.files[0];
+                    // Eğer isim değişmişse veya klasör taşınmışsa güncelle
+                    if (driveFolder.name !== name || (parentId && !driveFolder.parents?.includes(parentId))) {
+                        await fetch(`https://www.googleapis.com/drive/v3/files/${driveFolder.id}`, {
+                            method: 'PATCH',
+                            headers: { ...headers, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ name, addParents: parentId, removeParents: driveFolder.parents?.[0] })
+                        });
+                    }
+                    this._folderIdCache[cacheKey] = driveFolder.id;
+                    return driveFolder.id;
+                }
+            }
+        }
+
+        // Klasik isimle arama (fallback)
         let q = `name='${name.replace(/'/g, "\\'")}' and mimeType='${folderMime}' and trashed=false`;
         if (parentId) q += ` and '${parentId}' in parents`;
 
@@ -274,7 +301,12 @@ class CloudStorageManager {
         }
 
         // Oluştur
-        const body = { name, mimeType: folderMime };
+        const body = { 
+            name, 
+            mimeType: folderMime, 
+            appProperties: { type: 'folder' } 
+        };
+        if (appFolderId) body.appProperties.folderId = appFolderId;
         if (parentId) body.parents = [parentId];
 
         const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
@@ -308,7 +340,7 @@ class CloudStorageManager {
                 parentDriveId = appFolderToDriveId[folder.parentId];
             }
 
-            const driveId = await this._getOrCreateDriveFolder(safeName, parentDriveId);
+            const driveId = await this._getOrCreateDriveFolder(safeName, parentDriveId, folder.id);
             appFolderToDriveId[folder.id] = driveId;
         }
 
@@ -341,16 +373,11 @@ class CloudStorageManager {
         const safeName = this._sanitizeName(board.name) || board.id;
         const fileName = board.isPDF ? `${safeName}.pdf.tom` : `${safeName}.tom`;
 
-        // Eğer ID yoksa, aynı isimli dosya var mı diye isimle arat (duplikasyonu önlemek için)
-        if (!existingFileId) {
-            const found = await this._findFileInFolder(fileName, targetFolderId);
-            if (found) existingFileId = found.id;
-        }
-
         // .tom formatında sıkıştır (pako/gzip)
         const tomBytes = await this._contentToTom(content);
 
-        return await this._uploadRawToDrive(fileName, tomBytes, 'application/octet-stream', targetFolderId, existingFileId);
+        const appProperties = { boardId: board.id, type: 'board' };
+        return await this._uploadRawToDrive(fileName, tomBytes, 'application/octet-stream', targetFolderId, existingFileId, appProperties);
     }
 
     /**
@@ -497,10 +524,10 @@ class CloudStorageManager {
      * Ham byte dizisini Drive'a yükle (multipart upload).
      * @returns {string} Drive file ID
      */
-    async _uploadRawToDrive(fileName, bytes, mimeType, folderId, existingFileId) {
+    async _uploadRawToDrive(fileName, bytes, mimeType, folderId, existingFileId, appProperties = {}) {
         const metadata = existingFileId
-            ? { name: fileName }
-            : { name: fileName, parents: [folderId] };
+            ? { name: fileName, appProperties }
+            : { name: fileName, parents: [folderId], appProperties };
 
         const blob = new Blob([bytes], { type: mimeType });
         const form = new FormData();
@@ -524,6 +551,63 @@ class CloudStorageManager {
 
         const result = await res.json();
         return result.id;
+    }
+
+    // ─── Garbage Collection ──────────────────────────────────────
+
+    /**
+     * Drive'daki dosyaları ve klasörleri kontrol ederek manifest'te olmayanları siler.
+     */
+    async _garbageCollect(tomarFolderId, localBoards, localFolders) {
+        try {
+            const headers = { Authorization: `Bearer ${this.gdriveToken}` };
+            
+            // App tarafından oluşturulan TÜM dosyaları listele
+            // (trashed=false ve parents kısıtlaması olmadan, drive.file scope sayesinde sadece kendi dosyalarımızı görürüz)
+            const listUrl = 'https://www.googleapis.com/drive/v3/files?' +
+                new URLSearchParams({ 
+                    q: "trashed=false", 
+                    fields: 'files(id,name,appProperties,mimeType,parents)' 
+                }).toString();
+
+            const res = await fetch(listUrl, { headers });
+            if (!res.ok) return;
+            const data = await res.json();
+            
+            const boardIds = new Set(localBoards.map(b => b.id));
+            const folderIds = new Set(localFolders.map(f => f.id));
+            
+            for (const file of (data.files || [])) {
+                // Sadece Tomar klasörü altındakileri kontrol et (manifest hariç)
+                if (file.name === 'tomar-manifest.json') continue;
+                
+                const type = file.appProperties?.type;
+                const boardId = file.appProperties?.boardId;
+                const folderId = file.appProperties?.folderId;
+
+                let shouldDelete = false;
+
+                if (type === 'board') {
+                    // Board artık manifest'te yoksa sil
+                    if (!boardId || !boardIds.has(boardId)) shouldDelete = true;
+                } else if (type === 'folder') {
+                    // Klasör artık manifest'te yoksa sil (Tomar ve .settings klasörlerini koru)
+                    if (file.name !== 'Tomar' && file.name !== '.settings') {
+                        if (!folderId || !folderIds.has(folderId)) shouldDelete = true;
+                    }
+                }
+
+                if (shouldDelete) {
+                    console.log(`[CloudSync] Garbage Collection: Siliniyor -> ${file.name}`);
+                    await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}`, {
+                        method: 'DELETE',
+                        headers
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('[CloudSync] Garbage Collection hatası:', e);
+        }
     }
 
     // ─── Yardımcı Metotlar ────────────────────────────────────────
