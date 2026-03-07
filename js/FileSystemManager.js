@@ -277,6 +277,13 @@ class FileSystemManager {
      */
     async _saveBoardToNative(key, value) {
         const boardId = key.replace('wb_content_', '');
+        
+        // GÜVENLİK: boardId geçerli değilse veya 'null' ise yazma
+        if (!boardId || boardId === 'null' || boardId === 'undefined') {
+            console.warn('[FileSystemManager] Geçersiz boardId tespit edildi, native kayıt atlanıyor:', key);
+            return;
+        }
+
         const pathSegments = this._getBoardFilePath(boardId);
         // pathSegments: ['Proje', 'Alt', 'notAdı.tom']
 

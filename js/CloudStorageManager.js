@@ -567,7 +567,7 @@ class CloudStorageManager {
             const listUrl = 'https://www.googleapis.com/drive/v3/files?' +
                 new URLSearchParams({ 
                     q: "trashed=false", 
-                    fields: 'files(id,name,appProperties,mimeType,parents)' 
+                    fields: 'files(id,name,appProperties,mimeType,parents,createdTime)' 
                 }).toString();
 
             const res = await fetch(listUrl, { headers });
@@ -586,6 +586,12 @@ class CloudStorageManager {
                 const folderId = file.appProperties?.folderId;
 
                 let shouldDelete = false;
+
+                // GÜVENLİK: Eğer dosya/klasör son 2 dakika içinde oluşturulmuşsa dokunma.
+                // (Senkronizasyon gecikmeleri nedeniyle hatalı silmeleri önler)
+                const createdTime = new Date(file.createdTime).getTime();
+                const now = Date.now();
+                if (now - createdTime < 120000) continue; 
 
                 if (type === 'board') {
                     // Board artık manifest'te yoksa sil

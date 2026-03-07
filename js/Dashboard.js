@@ -30,12 +30,11 @@ class Dashboard {
         this.searchTerm = '';
 
 
-        this.boards = this.loadData('wb_boards', []);
-        this.folders = this.loadData('wb_folders', []);
-        this.viewSettings = this.loadData('wb_view_settings', {
-            gridSize: 'xsmall'
-        });
-        this.expandedFolders = this.loadData('wb_expanded_folders', []);
+        this.boards = [];
+        this.folders = [];
+        this.viewSettings = { gridSize: 'xsmall' };
+        this.expandedFolders = [];
+        this.customCovers = [];
 
         this.defaultCovers = [
             { id: 'c1', bg: '#ff5c5c', texture: 'dots' },
@@ -249,30 +248,27 @@ class Dashboard {
         await window.fileSystemManager.saveItem(key, value);
     }
 
-    // Keep legacy for now but mark as deprecated
-    loadData(key, defaultValue) {
-        console.warn('Sync loadData is deprecated. Use loadDataAsync');
-        const saved = localStorage.getItem(key);
-        return saved ? JSON.parse(saved) : defaultValue;
+    // Keep aliases for backward compatibility but make them async
+    async loadData(key, defaultValue) {
+        return await this.loadDataAsync(key, defaultValue);
     }
 
-    saveData(key, value) {
-        console.warn('Sync saveData is deprecated. Use saveDataAsync');
-        window.fileSystemManager.saveItem(key, value); // Background fire
+    async saveData(key, value) {
+        await this.saveDataAsync(key, value);
     }
 
     isMobile() {
         return window.innerWidth <= 768;
     }
 
-    toggleFolder(folderId) {
+    async toggleFolder(folderId) {
         const index = this.expandedFolders.indexOf(folderId);
         if (index === -1) {
             this.expandedFolders.push(folderId);
         } else {
             this.expandedFolders.splice(index, 1);
         }
-        this.saveData('wb_expanded_folders', this.expandedFolders);
+        await this.saveDataAsync('wb_expanded_folders', this.expandedFolders);
         this.renderSidebar();
     }
 
@@ -1717,7 +1713,7 @@ class Dashboard {
         if (closeBtn) closeBtn.onclick = () => modal.classList.remove('show');
         modal.onclick = (e) => { if (e.target === modal) modal.classList.remove('show'); };
 
-        addBtn.onclick = () => {
+        addBtn.onclick = async () => {
             try {
                 const color = colorInput.value;
                 if (!color) return;
@@ -1733,7 +1729,7 @@ class Dashboard {
                         board.coverBg = color;
                         board.coverTexture = 'linear';
                         delete board.coverImage; // Remove image if color selected
-                        this.saveData('wb_boards', this.boards);
+                        await this.saveDataAsync('wb_boards', this.boards);
                         this.renderBoards();
                     }
                 } else if (this.selectedBoards && this.selectedBoards.size > 0) {
@@ -1746,7 +1742,7 @@ class Dashboard {
                             delete board.coverImage;
                         }
                     });
-                    this.saveData('wb_boards', this.boards);
+                    await this.saveDataAsync('wb_boards', this.boards);
                     this.renderBoards();
                     this.clearSelection();
                 }
@@ -2353,9 +2349,9 @@ class Dashboard {
         this.bulkToolbar.querySelector('.selected-count').textContent = `${count} not seçildi`;
     }
 
-    showFolderPicker(callback) {
+    async showFolderPicker(callback) {
         // Ensure folders are up to date
-        this.folders = this.loadData('wb_folders', []);
+        this.folders = await this.loadDataAsync('wb_folders', []);
 
         const overlay = document.createElement('div');
         overlay.className = 'confirm-dialog-overlay';
