@@ -232,6 +232,30 @@ class TomarApp {
 
         // Expose to window for PropertiesSidebar to use during manual sync
         window.updateRangeProgress = updateRangeProgress;
+
+        // PWA File Handling API: .tom dosyasının çift tıklama ile açılması
+        this._setupLaunchQueue();
+    }
+
+    _setupLaunchQueue() {
+        if (!('launchQueue' in window)) return;
+        try {
+            launchQueue.setConsumer(async (launchParams) => {
+                if (!launchParams.files || launchParams.files.length === 0) return;
+                const fileHandle = launchParams.files[0];
+                try {
+                    const file = await fileHandle.getFile();
+                    if (file.name.toLowerCase().endsWith('.tom') && this.tomFileManager) {
+                        await this.tomFileManager._loadFromFile(file);
+                    }
+                } catch (e) {
+                    console.error('[LaunchQueue] .tom dosyası açılamadı:', e);
+                }
+            });
+        } catch (e) {
+            // launchQueue API desteklenmiyor, sessizce geç
+            console.debug('[LaunchQueue] API desteklenmiyor:', e);
+        }
     }
 
     handleDoubleClick(e) {

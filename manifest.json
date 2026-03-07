@@ -20,5 +20,22 @@
             "type": "image/svg+xml",
             "purpose": "maskable"
         }
-    ]
+    ],
+    "file_handlers": [
+        {
+            "action": "/",
+            "accept": {
+                "application/octet-stream": [".tom"]
+            },
+            "icons": [
+                {
+                    "src": "assets/favicon/favicon.svg",
+                    "sizes": "192x192",
+                    "type": "image/svg+xml"
+                }
+            ],
+            "launch_type": "single-client"
+        }
+    ],
+    "protocol_handlers": []
 }

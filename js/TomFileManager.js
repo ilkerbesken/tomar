@@ -1,13 +1,19 @@
 /**
  * TomFileManager - .tom dosya formatı için kaydetme ve açma yöneticisi
- * 
+ *
  * .tom formatı: JSON içeriğini gzip ile sıkıştırılmış ikili dosya
- * Xournal++'ın .xopp formatına benzer mantık (XML yerine JSON, gzip sıkıştırma)
- * 
- * Avantajları:
- * - Kayıpsız: Tüm stroke verisi (basınç, renk, araç tipi, metadata) korunur
- * - Küçük boyut: JSON'a kıyasla %60-80 boyut küçültmesi
- * - Düzenlenebilir: Her stroke tekrar manipüle edilebilir
+ * Desteklenen araç tipleri:
+ *   - pen, highlighter  → points dizisi (flat array ile optimize)
+ *   - text              → htmlContent, fontSize, color, alignment, width, height
+ *   - arrow / line      → start, end, curveControlPoint, styles
+ *   - shapes            → rectangle, ellipse, triangle, trapezoid, star, diamond,
+ *                         parallelogram, oval, heart, cloud
+ *   - tape              → mode, pattern, points, customMask (canvas→base64)
+ *   - table             → rows, cols, data, cellStyles, rowHeights, colWidths
+ *   - sticker           → her sticker bir veya daha fazla alt obje içerir;
+ *                         bunlar yukarıdaki tiplerin birleşimidir (group)
+ *   - image             → src (base64 veya URL)
+ *   - group             → children (recursive)
  */
 class TomFileManager {
     constructor(app) {
@@ -16,121 +22,82 @@ class TomFileManager {
         this._ensurePako();
     }
 
-    /**
-     * Pako kütüphanesini yükle (inline olarak)
-     */
-    async _ensurePako() {
-        if (typeof pako !== 'undefined') {
-            this._pakoReady = true;
-            return;
-        }
+    // ─────────────────────────────────────────────
+    // Pako yükleme
+    // ─────────────────────────────────────────────
 
+    async _ensurePako() {
+        if (typeof pako !== 'undefined') { this._pakoReady = true; return; }
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
             script.src = 'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js';
-            script.onload = () => {
-                this._pakoReady = true;
-                console.log('[TomFileManager] pako yüklendi.');
-                resolve();
-            };
-            script.onerror = () => {
-                console.error('[TomFileManager] pako yüklenemedi!');
-                reject(new Error('pako yüklenemedi'));
-            };
+            script.onload = () => { this._pakoReady = true; console.log('[TomFileManager] pako yüklendi.'); resolve(); };
+            script.onerror = () => { console.error('[TomFileManager] pako yüklenemedi!'); reject(new Error('pako yüklenemedi')); };
             document.head.appendChild(script);
         });
     }
 
-    /**
-     * Pako hazır olana kadar bekle
-     */
     async _waitForPako() {
         if (this._pakoReady) return;
         await this._ensurePako();
-        // Ekstra bekleme: script henüz yükleniyor olabilir
         let attempts = 0;
         while (typeof pako === 'undefined' && attempts < 50) {
             await new Promise(r => setTimeout(r, 100));
             attempts++;
         }
-        if (typeof pako === 'undefined') {
-            throw new Error('pako kütüphanesi yüklenemedi');
-        }
+        if (typeof pako === 'undefined') throw new Error('pako kütüphanesi yüklenemedi');
     }
 
-    /**
-     * Mevcut tahtayı .tom dosyası olarak kaydet
-     * showSaveFilePicker API'si kullanılır (SVG/PDF ile aynı mantık).
-     */
+    // ─────────────────────────────────────────────
+    // Kaydetme
+    // ─────────────────────────────────────────────
+
     async saveAsTom() {
         await this._waitForPako();
 
         const dashboard = window.dashboard;
-        if (!dashboard) {
-            alert('Dashboard bulunamadı.');
-            return;
-        }
+        if (!dashboard) { alert('Dashboard bulunamadı.'); return; }
 
-        // Mevcut sayfa durumunu kaydet
+        // Mevcut sayfa durumunu diske/belleğe kaydet
         if (this.app.pageManager) {
             this.app.pageManager.saveCurrentPageState();
         }
 
-        // Sayfa verilerini hazırla (saveCurrentBoard ile aynı optimizasyon)
-        const optimizedPages = this.app.pageManager ? this.app.pageManager.pages.map(page => {
-            const optimizedPage = Utils.deepClone(page);
-            delete optimizedPage.thumbnail; // Büyük base64'ü kaldır
-
-            optimizedPage.objects = optimizedPage.objects.map(obj => {
-                // Koordinat hassasiyetini azalt
-                if (obj.x !== undefined) obj.x = Math.round(obj.x * 10) / 10;
-                if (obj.y !== undefined) obj.y = Math.round(obj.y * 10) / 10;
-
-                // Noktaları düzleştir: [{x,y,p},...] -> [x,y,p, x,y,p,...]
-                if (obj.points && Array.isArray(obj.points) && !obj._flat) {
-                    const simplified = Utils.simplifyPoints(obj.points, 0.5);
-                    const flat = [];
-                    for (const p of simplified) {
-                        flat.push(Math.round(p.x * 10) / 10);
-                        flat.push(Math.round(p.y * 10) / 10);
-                        flat.push(p.pressure ? (Math.round(p.pressure * 10) / 10) : 0.5);
-                    }
-                    obj.points = flat;
-                    obj._flat = true;
-                }
-                return obj;
+        // Sayfaları serileştir
+        let pages = null;
+        if (this.app.pageManager) {
+            pages = this.app.pageManager.pages.map(page => {
+                const p = Utils.deepClone(page);
+                delete p.thumbnail; // Büyük base64 thumbnail'i kaldır
+                p.objects = p.objects.map(obj => this._serializeObject(obj));
+                return p;
             });
-            return optimizedPage;
-        }) : null;
+        }
 
         const content = {
-            version: "2.0",
-            format: "tom",
+            version: '2.1',
+            format: 'tom',
             savedAt: new Date().toISOString(),
-            appVersion: "Tomar",
-            pages: optimizedPages,
-            objects: optimizedPages ? null : Utils.deepClone(this.app.state.objects)
+            appVersion: 'Tomar',
+            pages: pages,
+            objects: pages ? null : (this.app.state.objects || []).map(obj => this._serializeObject(obj))
         };
 
-        // JSON -> gzip sıkıştır
         const jsonStr = JSON.stringify(content);
         const compressed = pako.gzip(jsonStr);
 
-        // Dosya adı: pano adı veya varsayılan
+        // Dosya adı
         const boardName = dashboard.currentBoardId
             ? (dashboard.boards.find(b => b.id === dashboard.currentBoardId)?.name || 'tomar')
             : 'tomar';
-        const safeName = boardName.replace(/[^a-zA-Z0-9ğüşıöçĞÜŞİÖÇ\s-_]/g, '').trim() || 'tomar';
+        const safeName = boardName.replace(/[^a-zA-Z0-9ğüşıöçĞÜŞİÖÇ\s\-_]/g, '').trim() || 'tomar';
 
-        // File System Access API ile kaydet (SVG/PDF gibi)
+        // File System Access API ile kaydet
         if (window.showSaveFilePicker) {
             try {
                 const fileHandle = await window.showSaveFilePicker({
                     suggestedName: `${safeName}.tom`,
-                    types: [{
-                        description: 'Tomar Notu (.tom)',
-                        accept: { 'application/octet-stream': ['.tom'] }
-                    }]
+                    types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/octet-stream': ['.tom'] } }]
                 });
                 const writable = await fileHandle.createWritable();
                 await writable.write(compressed);
@@ -139,12 +106,12 @@ class TomFileManager {
                 this._showToast('✅ .tom dosyası kaydedildi!');
                 return;
             } catch (e) {
-                if (e.name === 'AbortError') return; // Kullanıcı iptal etti
+                if (e.name === 'AbortError') return;
                 console.warn('[TomFileManager] showSaveFilePicker başarısız, fallback kullanılıyor:', e);
             }
         }
 
-        // Fallback: <a> download ile indir
+        // Fallback: <a> download
         const blob = new Blob([compressed], { type: 'application/octet-stream' });
         const link = document.createElement('a');
         link.download = `${safeName}.tom`;
@@ -154,33 +121,29 @@ class TomFileManager {
         this._showToast('✅ .tom dosyası indirildi!');
     }
 
-    /**
-     * .tom dosyasını aç ve içeriği yükle
-     * (PDF/SVG açma ile aynı UI semantiği: dosya seçici açılır)
-     */
+    // ─────────────────────────────────────────────
+    // Açma
+    // ─────────────────────────────────────────────
+
     async openTomFile() {
         await this._waitForPako();
 
-        // File System Access API kullan
         if (window.showOpenFilePicker) {
             try {
                 const [fileHandle] = await window.showOpenFilePicker({
-                    types: [{
-                        description: 'Tomar Notu (.tom)',
-                        accept: { 'application/octet-stream': ['.tom'] }
-                    }],
+                    types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/octet-stream': ['.tom'] } }],
                     multiple: false
                 });
                 const file = await fileHandle.getFile();
                 await this._loadFromFile(file);
                 return;
             } catch (e) {
-                if (e.name === 'AbortError') return; // Kullanıcı iptal etti
+                if (e.name === 'AbortError') return;
                 console.warn('[TomFileManager] showOpenFilePicker başarısız, fallback kullanılıyor:', e);
             }
         }
 
-        // Fallback: hidden input ile aç
+        // Fallback: hidden input
         const input = document.getElementById('tomInput');
         if (input) {
             input.onchange = async (e) => {
@@ -192,24 +155,18 @@ class TomFileManager {
         }
     }
 
-    /**
-     * Dosyayı oku, sıkıştırmayı aç, içeriği yükle
-     */
     async _loadFromFile(file) {
         await this._waitForPako();
-
         try {
-            // Dosyayı ArrayBuffer olarak oku
             const arrayBuffer = await file.arrayBuffer();
             const uint8 = new Uint8Array(arrayBuffer);
 
             let jsonStr;
-            // Gzip mi yoksa düz JSON mi kontrol et
             if (uint8[0] === 0x1f && uint8[1] === 0x8b) {
-                // Gzip imzası: decompress
+                // Gzip sıkıştırılmış
                 jsonStr = pako.inflate(uint8, { to: 'string' });
             } else {
-                // Muhtemelen eski düz JSON (geriye dönük uyumluluk)
+                // Eski düz JSON (geriye dönük uyumluluk)
                 jsonStr = new TextDecoder().decode(uint8);
             }
 
@@ -220,88 +177,341 @@ class TomFileManager {
                 return;
             }
 
-            // Dashboard görünür olmalı -> app görünümüne geç
-            const dashboard = window.dashboard;
-            if (dashboard) {
-                // Yeni bir board oluştur bu dosya için
-                const boardName = file.name.replace(/\.tom$/i, '') || 'İçe Aktarılan Not';
-                const board = {
-                    id: 'tom_' + Date.now(),
-                    name: boardName,
-                    createdAt: Date.now(),
-                    lastModified: Date.now(),
-                    coverBg: '#1971c2',
-                    coverTexture: 'dots',
-                    folderId: null,
-                    deleted: false,
-                    isTomFile: true  // bu bir .tom dosyasından geldi
-                };
-
-                dashboard.boards.push(board);
-                await dashboard.saveDataAsync('wb_boards', dashboard.boards);
-
-                // İçeriği kaydet (inflate ile)
-                const inflateObjects = (objs) => {
-                    if (!objs) return [];
-                    return objs.map(obj => {
-                        if (obj._flat && Array.isArray(obj.points)) {
-                            const inflated = [];
-                            for (let i = 0; i < obj.points.length; i += 3) {
-                                inflated.push({
-                                    x: obj.points[i],
-                                    y: obj.points[i + 1],
-                                    pressure: obj.points[i + 2]
-                                });
-                            }
-                            obj.points = inflated;
-                            delete obj._flat;
-                        }
-                        return obj;
-                    });
-                };
-
-                let pages = content.pages;
-                if (pages) {
-                    pages.forEach(p => p.objects = inflateObjects(p.objects));
-                }
-
-                const contentToSave = {
-                    version: content.version || "2.0",
-                    pages: pages,
-                    objects: pages ? null : inflateObjects(content.objects)
-                };
-
-                await dashboard.saveDataAsync(`wb_content_${board.id}`, contentToSave);
-
-                // Dashboard panelini gizle, app'i göster
-                dashboard.container.style.display = 'none';
-                dashboard.appContainer.style.display = 'flex';
-                window.dispatchEvent(new Event('resize'));
-
-                // Board'u yükle
-                dashboard.currentBoardId = board.id;
-                await dashboard.loadBoardContent(board.id);
-
-                // TabManager varsa sekme oluştur
-                if (this.app.tabManager) {
-                    this.app.tabManager.openBoard(board.id, board.name);
-                }
-
-                if (this.app.zoomManager) {
-                    setTimeout(() => this.app.zoomManager.fitToWidth(10), 200);
-                }
-
-                this._showToast(`📂 "${board.name}" açıldı`);
+            // Sayfaları deserialize et
+            let pages = content.pages;
+            if (pages) {
+                // Paralel olarak tüm sayfaları deserialize et
+                pages = await Promise.all(
+                    pages.map(async page => {
+                        page.objects = await Promise.all(
+                            (page.objects || []).map(obj => this._deserializeObject(obj))
+                        );
+                        return page;
+                    })
+                );
+            } else if (content.objects) {
+                // Eski format: tek sayfa
+                const deserializedObjects = await Promise.all(
+                    content.objects.map(obj => this._deserializeObject(obj))
+                );
+                pages = [{
+                    id: Date.now(),
+                    name: 'Sayfa 1',
+                    objects: deserializedObjects,
+                    backgroundColor: 'white',
+                    backgroundPattern: 'none',
+                    thumbnail: null
+                }];
             }
+
+            const dashboard = window.dashboard;
+            if (!dashboard) return;
+
+            const boardName = file.name.replace(/\.tom$/i, '') || 'İçe Aktarılan Not';
+            const board = {
+                id: 'tom_' + Date.now(),
+                name: boardName,
+                createdAt: Date.now(),
+                lastModified: Date.now(),
+                coverBg: '#1971c2',
+                coverTexture: 'dots',
+                folderId: null,
+                deleted: false,
+                isTomFile: true
+            };
+
+            dashboard.boards.push(board);
+            await dashboard.saveDataAsync('wb_boards', dashboard.boards);
+
+            const contentToSave = {
+                version: content.version || '2.1',
+                pages: pages,
+                objects: pages ? null : []
+            };
+
+            await dashboard.saveDataAsync(`wb_content_${board.id}`, contentToSave);
+
+            // Dashboard → App geçişi
+            dashboard.container.style.display = 'none';
+            dashboard.appContainer.style.display = 'flex';
+            window.dispatchEvent(new Event('resize'));
+
+            dashboard.currentBoardId = board.id;
+            await dashboard.loadBoardContent(board.id);
+
+            if (this.app.tabManager) {
+                this.app.tabManager.openBoard(board.id, board.name);
+            }
+
+            if (this.app.zoomManager) {
+                setTimeout(() => this.app.zoomManager.fitToWidth(10), 200);
+            }
+
+            this._showToast(`📂 "${board.name}" açıldı`);
+
         } catch (err) {
             console.error('[TomFileManager] Yükleme hatası:', err);
             alert('Dosya açılamadı. Geçerli bir .tom dosyası seçin.\n\nHata: ' + err.message);
         }
     }
 
+    // ─────────────────────────────────────────────
+    // Serileştirme (Kayıt) Yardımcıları
+    // ─────────────────────────────────────────────
+
     /**
-     * Kısa bildirim mesajı göster (toast)
+     * Tek bir nesneyi JSON-güvenli hale getirir.
+     * Araç tipine göre özel işlemler uygular.
      */
+    _serializeObject(obj) {
+        if (!obj) return obj;
+
+        // Derin kopya — orijinal nesneyi değiştirme
+        const o = Object.assign({}, obj);
+
+        // ── Grup: recursive ──
+        if (o.type === 'group') {
+            o.children = (o.children || []).map(child => this._serializeObject(child));
+            return o;
+        }
+
+        // ── Kalem / Vurgulayıcı: points flat array ──
+        if ((o.type === 'pen' || o.type === 'highlighter') && Array.isArray(o.points) && !o._flat) {
+            const simplified = Utils.simplifyPoints(o.points, 0.5);
+            const flat = [];
+            for (const p of simplified) {
+                flat.push(Math.round(p.x * 10) / 10);
+                flat.push(Math.round(p.y * 10) / 10);
+                flat.push(p.pressure !== undefined ? (Math.round(p.pressure * 100) / 100) : 0.5);
+            }
+            o.points = flat;
+            o._flat = true;
+        }
+
+        // ── Ok / Çizgi: koordinat hassasiyeti ──
+        if (o.type === 'arrow' || o.type === 'line') {
+            if (o.start) o.start = this._roundPoint(o.start);
+            if (o.end) o.end = this._roundPoint(o.end);
+            if (o.curveControlPoint) o.curveControlPoint = this._roundPoint(o.curveControlPoint);
+        }
+
+        // ── Şekiller: koordinat hassasiyeti ──
+        if (o.x !== undefined) o.x = Math.round(o.x * 10) / 10;
+        if (o.y !== undefined) o.y = Math.round(o.y * 10) / 10;
+        if (o.width !== undefined) o.width = Math.round(o.width * 10) / 10;
+        if (o.height !== undefined) o.height = Math.round(o.height * 10) / 10;
+
+        // ── Bant (Tape): points + customMask/customImage ──
+        if (o.type === 'tape') {
+            // Points dizisi flat array'e çevir (daha küçük dosya)
+            if (Array.isArray(o.points) && !o._flat) {
+                const flat = [];
+                for (const p of o.points) {
+                    flat.push(Math.round(p.x * 10) / 10);
+                    flat.push(Math.round(p.y * 10) / 10);
+                }
+                o.points = flat;
+                o._flat = true;
+            }
+
+            // HTMLCanvasElement → base64 PNG
+            if (o.customMask && (o.customMask instanceof HTMLCanvasElement)) {
+                try {
+                    o.customMask = { _type: 'canvas_b64', data: o.customMask.toDataURL('image/png') };
+                } catch (_) { delete o.customMask; }
+            } else if (o.customMask && !(typeof o.customMask === 'object' && o.customMask._type)) {
+                // Serialize edilemeyen nesneyi sil
+                delete o.customMask;
+            }
+
+            if (o.customImage && (o.customImage instanceof HTMLImageElement || o.customImage instanceof HTMLCanvasElement)) {
+                try {
+                    if (o.customImage instanceof HTMLCanvasElement) {
+                        o.customImage = { _type: 'canvas_b64', data: o.customImage.toDataURL('image/png') };
+                    } else {
+                        // HTMLImageElement: src üzerinden canvas'a çekip base64 al
+                        const tmpCanvas = document.createElement('canvas');
+                        tmpCanvas.width = o.customImage.naturalWidth || 100;
+                        tmpCanvas.height = o.customImage.naturalHeight || 100;
+                        tmpCanvas.getContext('2d').drawImage(o.customImage, 0, 0);
+                        o.customImage = { _type: 'canvas_b64', data: tmpCanvas.toDataURL('image/png') };
+                    }
+                } catch (_) { delete o.customImage; }
+            } else if (o.customImage && !(typeof o.customImage === 'object' && o.customImage._type)) {
+                delete o.customImage;
+            }
+
+            // Pattern cache kaldır (her zaman yeniden oluşturulur)
+            // patterns objesi TapeTool instance'ında saklanır, obj'de değil — sorun yok
+        }
+
+        // ── Metin (Text): sadece gerekli alanlar ──
+        if (o.type === 'text') {
+            // htmlContent, fontSize, color, alignment, x, y, width, height zaten var
+            // _imageCache gibi runtime önbellekleri kaldır
+            delete o._imageCache;
+            delete o._cachedSvg;
+        }
+
+        // ── Tablo (Table): önbellek temizle ──
+        if (o.type === 'table') {
+            // _cellCaches runtime bilgisi — kayıt dışı
+            delete o._cellCaches;
+            // cellStyles'ın her hücresini serialize et
+            if (Array.isArray(o.cellStyles)) {
+                o.cellStyles = o.cellStyles.map(row =>
+                    (row || []).map(cell => cell || {})
+                );
+            }
+            // data 2D dizisi zaten JSON-serializable (string content HTML olabilir)
+        }
+
+        // ── Resim (Image): src base64 veya URL ──
+        // src zaten string, ImageTool cache kaldır
+        if (o.type === 'image') {
+            // _cachedImage gibi runtime nesneleri kaldır
+            delete o._cachedImage;
+        }
+
+        // ── Genel: DOM elemanlarını ve cyclic referansları temizle ──
+        delete o._cellEditor;
+        delete o._toolbar;
+
+        return o;
+    }
+
+    _roundPoint(p) {
+        if (!p) return p;
+        return { x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 };
+    }
+
+    // ─────────────────────────────────────────────
+    // Deserileştirme (Açma) Yardımcıları
+    // ─────────────────────────────────────────────
+
+    /**
+     * Tek bir nesneyi çalışma zamanı formatına geri çevirir.
+     * Async çünkü canvas/image yükleme gerekebilir.
+     */
+    async _deserializeObject(obj) {
+        if (!obj) return obj;
+
+        // ── Grup: recursive ──
+        if (obj.type === 'group') {
+            obj.children = await Promise.all(
+                (obj.children || []).map(child => this._deserializeObject(child))
+            );
+            return obj;
+        }
+
+        // ── Kalem / Vurgulayıcı: flat array → [{x,y,pressure},...] ──
+        if ((obj.type === 'pen' || obj.type === 'highlighter') && obj._flat && Array.isArray(obj.points)) {
+            const inflated = [];
+            for (let i = 0; i < obj.points.length; i += 3) {
+                inflated.push({
+                    x: obj.points[i],
+                    y: obj.points[i + 1],
+                    pressure: obj.points[i + 2] !== undefined ? obj.points[i + 2] : 0.5
+                });
+            }
+            obj.points = inflated;
+            delete obj._flat;
+        }
+
+        // ── Bant (Tape): flat points + customMask/customImage ──
+        if (obj.type === 'tape') {
+            // Points flat array → [{x,y},...] (bant için pressure yok)
+            if (obj._flat && Array.isArray(obj.points)) {
+                const inflated = [];
+                for (let i = 0; i < obj.points.length; i += 2) {
+                    inflated.push({ x: obj.points[i], y: obj.points[i + 1] });
+                }
+                obj.points = inflated;
+                delete obj._flat;
+            }
+
+            // customMask: base64 → HTMLImageElement (TapeTool bunu kullanabilir)
+            if (obj.customMask && typeof obj.customMask === 'object' && obj.customMask._type === 'canvas_b64') {
+                obj.customMask = await this._loadImageFromBase64(obj.customMask.data);
+            }
+
+            if (obj.customImage && typeof obj.customImage === 'object' && obj.customImage._type === 'canvas_b64') {
+                obj.customImage = await this._loadImageFromBase64(obj.customImage.data);
+            }
+        }
+
+        // ── Tablo (Table): önbellek başlat ──
+        if (obj.type === 'table') {
+            // _cellCaches runtime — boş olarak başlat
+            obj._cellCaches = {};
+
+            // cellStyles eksik satır/sütunları tamamla
+            if (!Array.isArray(obj.cellStyles) || obj.cellStyles.length !== obj.rows) {
+                obj.cellStyles = Array(obj.rows).fill(null).map((_, r) => {
+                    const existingRow = (obj.cellStyles && obj.cellStyles[r]) ? obj.cellStyles[r] : [];
+                    return Array(obj.cols).fill(null).map((__, c) => existingRow[c] || {});
+                });
+            }
+
+            // rowHeights / colWidths eksikse varsayılan değer ver
+            if (!Array.isArray(obj.rowHeights) || obj.rowHeights.length !== obj.rows) {
+                obj.rowHeights = Array(obj.rows).fill(40);
+            }
+            if (!Array.isArray(obj.colWidths) || obj.colWidths.length !== obj.cols) {
+                obj.colWidths = Array(obj.cols).fill(100);
+            }
+
+            // data eksik hücreleri tamamla
+            if (!Array.isArray(obj.data)) {
+                obj.data = Array(obj.rows).fill(null).map(() => Array(obj.cols).fill(''));
+            }
+
+            // width / height hesapla (eğer eksikse)
+            if (!obj.width) obj.width = obj.colWidths.reduce((a, b) => a + b, 0);
+            if (!obj.height) obj.height = obj.rowHeights.reduce((a, b) => a + b, 0);
+        }
+
+        // ── Metin (Text): eksik alanları tamamla ──
+        if (obj.type === 'text') {
+            obj.htmlContent = obj.htmlContent || obj.content || '';
+            obj.fontSize = obj.fontSize || 12;
+            obj.color = obj.color || '#000000';
+            obj.width = obj.width || 200;
+            obj.height = obj.height || 40;
+        }
+
+        // ── Ok / Çizgi: eksik alanları tamamla ──
+        if (obj.type === 'arrow' || obj.type === 'line') {
+            // Eski format geriye dönük uyumluluk
+            if (!obj.start && obj.x1 !== undefined) {
+                obj.start = { x: obj.x1, y: obj.y1 };
+                obj.end = { x: obj.x2, y: obj.y2 };
+            }
+        }
+
+        return obj;
+    }
+
+    /**
+     * base64 PNG → HTMLImageElement (Promise)
+     */
+    _loadImageFromBase64(dataUrl) {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => {
+                // Yüklenemezse null döndür
+                console.warn('[TomFileManager] Resim yüklenemedi.');
+                resolve(null);
+            };
+            img.src = dataUrl;
+        });
+    }
+
+    // ─────────────────────────────────────────────
+    // Toast Bildirimi
+    // ─────────────────────────────────────────────
+
     _showToast(message) {
         let toast = document.getElementById('tom-toast');
         if (!toast) {
@@ -312,14 +522,16 @@ class TomFileManager {
                 bottom: 30px;
                 left: 50%;
                 transform: translateX(-50%);
-                background: rgba(0,0,0,0.8);
+                background: rgba(0,0,0,0.85);
                 color: white;
-                padding: 10px 20px;
-                border-radius: 8px;
+                padding: 10px 24px;
+                border-radius: 10px;
                 font-size: 14px;
+                font-family: sans-serif;
                 z-index: 99999;
                 pointer-events: none;
                 transition: opacity 0.3s;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
             `;
             document.body.appendChild(toast);
         }
