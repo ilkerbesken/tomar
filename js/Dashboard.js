@@ -721,11 +721,9 @@ class Dashboard {
             const coverBg = board.coverBg || '#4a90e2';
             const coverTexture = board.coverTexture || 'linear';
 
-            // Determine if we're in "file mode" (local native FS or Google Drive)
-            // In file mode: show dot-tom.svg icon
-            // In web/PWA mode (indexeddb, no GDrive): show colorful notebook cover
-            const isFileMode = (window.fileSystemManager?.mode === 'native') ||
-                               !!localStorage.getItem('tomar_gdrive_token');
+            // dot-tom.svg yalnızca yerel klasör (native) modunda gösterilir.
+            // Google Drive bağlı veya web/PWA modunda renkli kapaklar kullanılır.
+            const isFileMode = window.fileSystemManager?.mode === 'native';
 
             const notebookCoverHTML = isFileMode
                 ? `<div class="tom-file-preview" style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;">
