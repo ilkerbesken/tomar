@@ -9,6 +9,8 @@ class FileSystemManager {
         this.db = null;
         this._initialized = false;
         this.onStorageChange = null;
+        this.onSave = null;
+        this.onRemove = null;
         this.dirHandle = null;
     }
 
@@ -142,9 +144,12 @@ class FileSystemManager {
         } catch (e) { }
 
         // 4. Save to Native folder if active
+        // 4. Save to Native folder if active
         if (!skipNative && this.mode === 'native' && this.dirHandle) {
             await this._saveToNative(key, value);
         }
+
+        if (this.onSave) this.onSave(key, value);
     }
 
     async _saveToNative(key, value) {
@@ -186,6 +191,8 @@ class FileSystemManager {
                 await this.dirHandle.removeEntry(`${key}.json`);
             } catch (e) { }
         }
+
+        if (this.onRemove) this.onRemove(key);
     }
 
     // --- Sync Metadata Helpers ---

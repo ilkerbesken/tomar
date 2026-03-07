@@ -85,6 +85,8 @@ class Dashboard {
                 // Normal background sync
                 cloud.syncWithGoogleDrive().catch(() => { });
             }, 1500);
+
+            this.setupAutoSync();
         }
     }
 
@@ -2476,5 +2478,41 @@ class Dashboard {
                 btn.title = "Tümünü Seç (Ctrl+A)";
             }
         });
+    }
+    setupAutoSync() {
+        if (!localStorage.getItem('tomar_gdrive_token')) return;
+
+        let syncTimer = null;
+        const cloud = new CloudStorageManager(this.app);
+
+        // 1. Auto-Push (Debounced)
+        window.fileSystemManager.onSave = () => {
+            if (syncTimer) clearTimeout(syncTimer);
+            syncTimer = setTimeout(async () => {
+                console.log('[AutoSync] Değişiklikler algılandı, buluta aktarılıyor...');
+                await cloud.syncWithGoogleDrive();
+            }, 5000); // 5 saniye sonra eşitle
+        };
+
+        window.fileSystemManager.onRemove = () => {
+            if (syncTimer) clearTimeout(syncTimer);
+            syncTimer = setTimeout(async () => {
+                await cloud.syncWithGoogleDrive();
+            }, 5000);
+        };
+
+        // 2. Auto-Pull (Polling)
+        // Her 60 saniyede bir bulutta yeni bir şey var mı kontrol et
+        setInterval(async () => {
+            // Sadece kullanıcı aktifse veya dashboard açıksa kontrol et
+            if (document.visibilityState === 'visible') {
+                console.log('[AutoSync] Bulut kontrol ediliyor...');
+                const res = await cloud.syncWithGoogleDrive(); // Bu metod hem download hem upload yapar
+                if (res.success && res.message.includes('not güncellendi')) {
+                    // Eğer yeni bir şey indirilmişse arayüzü tazele
+                    this.initAsync();
+                }
+            }
+        }, 60000); 
     }
 }

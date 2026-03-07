@@ -10,11 +10,8 @@ class CloudStorageManager {
         this.GOOGLE_CLIENT_ID = '915367935470-6ok8pt4dhr4thmmf4g4n2v112tksehds.apps.googleusercontent.com';
         this.GOOGLE_SCOPES = 'https://www.googleapis.com/auth/drive.file';
         this.gisLoaded = false;
-        this.gdriveToken = null;
-
-        // Restore saved token if any
-        const saved = localStorage.getItem('tomar_gdrive_token');
-        if (saved) this.gdriveToken = saved;
+        this.gdriveToken = localStorage.getItem('tomar_gdrive_token');
+        this.isSyncing = false;
     }
 
     // ─── Platform Tespiti ───────────────────────────────────────
@@ -28,10 +25,6 @@ class CloudStorageManager {
     }
 
     // ─── JSON Export ─────────────────────────────────────────────
-    /**
-     * Tüm notları ve klasörleri JSON dosyası olarak indirir.
-     * iPad'de Dosyalar uygulamasına / iCloud Drive'a taşınabilir.
-     */
     async exportToFile() {
         try {
             const data = await this._collectAllData();
@@ -79,7 +72,6 @@ class CloudStorageManager {
                 reader.readAsText(file);
             };
 
-            // iOS/iPadOS'ta input.click() için body'e eklemek gerekebilir
             document.body.appendChild(input);
             input.click();
             document.body.removeChild(input);
@@ -136,49 +128,83 @@ class CloudStorageManager {
         }
     }
 
-    // ─── Google Drive: Senkronizasyon (Incremental) ──────────────
-    /**
-     * Yerel veritabanındaki (IndexedDB) her notu Drive ile senkronize eder.
-     */
+    // ─── Google Drive: Senkronizasyon (Bidirectional) ────────────
     async syncWithGoogleDrive() {
-        await this._ensureToken();
-        const fsm = window.fileSystemManager;
-        const folderId = await this._getOrCreateTomarFolder();
+        if (this.isSyncing) return { success: false, message: 'Senkronizasyon zaten sürüyor.' };
+        this.isSyncing = true;
 
-        // 1. Temel verileri senkronize et (boards, folders, settings)
-        // Bunlar küçük olduğu için tek bir "manifest" dosyasında tutabiliriz veya ayrı ayrı.
-        // Şimdilik board listesini ve klasörleri toplu senkronize edelim.
-        await this._syncManifest(folderId);
+        try {
+            await this._ensureToken();
+            const fsm = window.fileSystemManager;
+            const folderId = await this._getOrCreateTomarFolder();
+            let syncCount = 0;
 
-        // 2. Her board içeriğini tek tek kontrol et
-        const boards = await fsm.getItem('wb_boards', []);
-        let syncCount = 0;
+            // 1. PULL: Buluttaki manifesti kontrol et
+            const remoteManifestFile = await this._findFileInFolder('tomar-manifest.json', folderId);
+            if (remoteManifestFile) {
+                try {
+                    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${remoteManifestFile.id}?alt=media`, {
+                        headers: { Authorization: `Bearer ${this.gdriveToken}` }
+                    });
+                    const remoteManifest = await res.json();
+                    const localBoards = await fsm.getItem('wb_boards', []);
 
-        for (const board of boards) {
-            let meta = await fsm.getSyncMetadata(board.id);
-            if (!meta) {
-                await fsm.updateSyncMetadata(board.id);
-                meta = await fsm.getSyncMetadata(board.id);
+                    for (const rb of (remoteManifest.boards || [])) {
+                        const lb = localBoards.find(b => b.id === rb.id);
+                        if (!lb || (rb.lastModified > (lb.lastModified || 0))) {
+                            const bFile = await this._findFileInFolder(`board_${rb.id}.json`, folderId);
+                            if (bFile) {
+                                const bRes = await fetch(`https://www.googleapis.com/drive/v3/files/${bFile.id}?alt=media`, {
+                                    headers: { Authorization: `Bearer ${this.gdriveToken}` }
+                                });
+                                const bContent = await bRes.json();
+                                // skipNative=true to avoid double native writes if mode is native
+                                await fsm.saveItem(`wb_content_${rb.id}`, bContent, true);
+                                await fsm.setSyncMetadata(rb.id, {
+                                    googleDriveFileId: bFile.id,
+                                    lastSyncedTime: Date.now(),
+                                    lastModifiedLocally: rb.lastModified
+                                });
+                                syncCount++;
+                            }
+                        }
+                    }
+                    if (syncCount > 0) {
+                        await fsm.saveItem('wb_boards', remoteManifest.boards, true);
+                        await fsm.saveItem('wb_folders', remoteManifest.folders, true);
+                        await fsm.saveItem('wb_view_settings', remoteManifest.viewSettings, true);
+                    }
+                } catch(e) { console.error('[Sync] Pull failed', e); }
             }
 
-            const needsUpload = !meta.googleDriveFileId || (meta.lastModifiedLocally > meta.lastSyncedTime);
-
-            if (needsUpload) {
-                console.log(`[Sync] Uploading board: ${board.name} (${board.id})`);
-                const content = await fsm.getItem(`wb_content_${board.id}`, null);
-                if (!content) continue;
-
-                const fileId = await this._uploadBoardToDrive(board, content, folderId, meta.googleDriveFileId);
-
-                await fsm.setSyncMetadata(board.id, {
-                    googleDriveFileId: fileId,
-                    lastSyncedTime: Date.now()
-                });
-                syncCount++;
+            // 2. PUSH: Yerelde değişenleri yükle
+            const boards = await fsm.getItem('wb_boards', []);
+            for (const board of boards) {
+                let meta = await fsm.getSyncMetadata(board.id);
+                if (!meta) {
+                    await fsm.updateSyncMetadata(board.id);
+                    meta = await fsm.getSyncMetadata(board.id);
+                }
+                if (!meta.googleDriveFileId || (meta.lastModifiedLocally > meta.lastSyncedTime)) {
+                    const content = await fsm.getItem(`wb_content_${board.id}`, null);
+                    if (content) {
+                        const fId = await this._uploadBoardToDrive(board, content, folderId, meta.googleDriveFileId);
+                        await fsm.setSyncMetadata(board.id, { googleDriveFileId: fId, lastSyncedTime: Date.now() });
+                        syncCount++;
+                    }
+                }
             }
+
+            // 3. Manifesti güncelle
+            await this._syncManifest(folderId);
+            return { success: true, message: syncCount > 0 ? `${syncCount} öğe eşitlendi.` : 'Her şey güncel.' };
+
+        } catch (err) {
+            console.error('[Sync] Hata:', err);
+            return { success: false, message: err.message };
+        } finally {
+            this.isSyncing = false;
         }
-
-        return { success: true, message: syncCount > 0 ? `${syncCount} not güncellendi.` : 'Her şey güncel.' };
     }
 
     async _syncManifest(folderId) {
@@ -221,51 +247,13 @@ class CloudStorageManager {
         return result.id;
     }
 
-    // --- Legacy methods updated to use the new logic or kept for compatibility ---
     async saveToGoogleDrive() {
         return this.syncWithGoogleDrive();
     }
 
     async loadFromGoogleDrive() {
-        await this._ensureToken();
-        const folderId = await this._getOrCreateTomarFolder();
-
-        // 1. Manifest yükle
-        const manifestFile = await this._findFileInFolder('tomar-manifest.json', folderId);
-        if (!manifestFile) return { success: false, message: 'Drive\'da yedek bulunamadı.' };
-
-        const manifestRes = await fetch(`https://www.googleapis.com/drive/v3/files/${manifestFile.id}?alt=media`, {
-            headers: { Authorization: `Bearer ${this.gdriveToken}` }
-        });
-        const manifest = await manifestRes.json();
-
-        const fsm = window.fileSystemManager;
-        await fsm.saveItem('wb_boards', manifest.boards);
-        await fsm.saveItem('wb_folders', manifest.folders);
-        await fsm.saveItem('wb_view_settings', manifest.viewSettings);
-        await fsm.saveItem('wb_custom_covers', manifest.customCovers);
-
-        // 2. Board içeriklerini yükle (Lazy or Immediate?)
-        // Şimdilik basitleştirelim ve tümünü çekelim
-        for (const board of manifest.boards) {
-            const boardFile = await this._findFileInFolder(`board_${board.id}.json`, folderId);
-            if (boardFile) {
-                const res = await fetch(`https://www.googleapis.com/drive/v3/files/${boardFile.id}?alt=media`, {
-                    headers: { Authorization: `Bearer ${this.gdriveToken}` }
-                });
-                const content = await res.json();
-                await fsm.saveItem(`wb_content_${board.id}`, content);
-                
-                // CRITICAL: Ensure we associate the fileId locally after restore
-                await fsm.setSyncMetadata(board.id, {
-                    googleDriveFileId: boardFile.id,
-                    lastSyncedTime: Date.now(),
-                    lastModifiedLocally: board.lastModified || Date.now()
-                });
-            }
-        }
-
-        return { success: true, message: 'Tüm veriler Drive\'dan geri yüklendi.' };
+        // Full manual pull
+        return this.syncWithGoogleDrive();
     }
 
     // ─── Yardımcı: Tomar klasörünü bul veya oluştur ───────────────
@@ -274,23 +262,20 @@ class CloudStorageManager {
         const folderName = 'Tomar';
         const folderMime = 'application/vnd.google-apps.folder';
 
-        // Önce mevcut Tomar klasörünü ara
         const searchQuery = `name='${folderName}' and mimeType='${folderMime}' and trashed=false`;
         const searchUrl = 'https://www.googleapis.com/drive/v3/files?' +
             new URLSearchParams({ q: searchQuery, fields: 'files(id,name)' }).toString();
 
         const searchRes = await fetch(searchUrl, { headers });
-
         if (!searchRes.ok) {
             this.gdriveToken = null;
             localStorage.removeItem('tomar_gdrive_token');
-            throw new Error(`Google Drive bağlantısı kesildi. Lütfen tekrar deneyin.`);
+            throw new Error(`Google Drive bağlantısı kesildi.`);
         }
 
         const searchData = await searchRes.json();
         if (searchData.files?.length > 0) return searchData.files[0].id;
 
-        // Yoksa oluştur
         const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
@@ -300,7 +285,6 @@ class CloudStorageManager {
         return folder.id;
     }
 
-    // ─── Yardımcı: Klasör içinde dosya ara ───────────────────────
     async _findFileInFolder(fileName, folderId) {
         const headers = { Authorization: `Bearer ${this.gdriveToken}` };
         const query = `name='${fileName}' and '${folderId}' in parents and trashed=false`;
@@ -314,7 +298,6 @@ class CloudStorageManager {
         return data.files?.[0] || null;
     }
 
-    // ─── Yardımcı: Tüm veriyi topla ─────────────────────────────
     async _collectAllData() {
         const fsm = window.fileSystemManager;
         const boards = await fsm.getItem('wb_boards', []);
@@ -329,7 +312,6 @@ class CloudStorageManager {
         return { version: 2, boards, folders, viewSettings, customCovers, contents };
     }
 
-    // ─── Yardımcı: İçe aktarılan veriyi uygula ──────────────────
     async _applyImportedData(data) {
         const fsm = window.fileSystemManager;
         if (data.boards) await fsm.saveItem('wb_boards', data.boards);
@@ -343,5 +325,4 @@ class CloudStorageManager {
     }
 }
 
-// Global olarak register et
 window.CloudStorageManager = CloudStorageManager;
