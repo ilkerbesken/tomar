@@ -33,6 +33,12 @@ class FileSystemManager {
 
         await this.db.open();
 
+        // 3. Request persistent storage (crucial for iPad/Safari)
+        if (navigator.storage && navigator.storage.persist) {
+            const isPersisted = await navigator.storage.persist();
+            console.log(`[FileSystemManager] Persistent storage: ${isPersisted}`);
+        }
+
         // Check for stored native handle (legacy or optional backup)
         if (window.showDirectoryPicker) {
             const savedHandle = await this.db.settings.get('folder_handle');

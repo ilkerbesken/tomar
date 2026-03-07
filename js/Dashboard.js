@@ -66,12 +66,25 @@ class Dashboard {
         this.init();
         this.setupStorageSettings();
 
-        // Optional silent sync on start if logged in
+        // ─── Cloud Sync Logic ─────────────────────────────────────
         if (localStorage.getItem('tomar_gdrive_token')) {
             setTimeout(async () => {
                 const cloud = new CloudStorageManager(this.app);
+                
+                // If local storage is empty, attempt a full restore from Drive
+                if (this.boards.length === 0) {
+                    console.log('[Dashboard] Local storage empty, attempting to restore from Google Drive...');
+                    const res = await cloud.loadFromGoogleDrive();
+                    if (res.success) {
+                        // Refresh UI with new data
+                        await this.initAsync();
+                        return;
+                    }
+                }
+
+                // Normal background sync
                 cloud.syncWithGoogleDrive().catch(() => { });
-            }, 1000);
+            }, 1500);
         }
     }
 
@@ -879,9 +892,10 @@ class Dashboard {
             const mode = window.fileSystemManager.mode;
             const hasDir = !!window.fileSystemManager.dirHandle;
             const hasStored = !!window.fileSystemManager.storedHandle;
-            const isSupported = !!window.showDirectoryPicker;
-
-            // 1. Durum Metni
+            const isFileSystemSupported = !!window.showDirectoryPicker;
+            const platform = window.CloudStorageManager ? window.CloudStorageManager.detect() : { isMobile: false };
+            
+            // 1. Durum Metni UI
             if (mode === 'native' && hasDir) {
                 statusText.innerHTML = `Mevcut Konum: <strong style="color: #2b8a3e">Yerel Klasör (${window.fileSystemManager.dirHandle.name})</strong>`;
             } else if (mode === 'native' && hasStored) {
@@ -892,7 +906,9 @@ class Dashboard {
 
             // 2. Buton ve Destek Notu Yönetimi
             const supportNote = document.getElementById('folderPickerSupportNote');
-            if (isSupported) {
+            
+            if (isFileSystemSupported) {
+                // Desteklenen sistem (Chromium Desktop/Android)
                 btnPick.style.display = 'flex';
                 if (hasDir) {
                     btnPick.innerHTML = '<img src="assets/icons/folder.svg" style="width: 16px; margin-right: 8px; filter: brightness(0) invert(1);"> Klasörü Değiştir';
@@ -906,8 +922,20 @@ class Dashboard {
                 }
                 if (supportNote) supportNote.style.display = 'none';
             } else {
+                // Desteklenmeyen sistem (iPad/iOS/Firefox/Safari)
                 btnPick.style.display = 'none';
-                if (supportNote) supportNote.style.display = 'block';
+                if (supportNote) {
+                    if (platform.isMobile) {
+                        supportNote.style.display = 'block';
+                        supportNote.style.color = '#888';
+                        supportNote.innerHTML = 'ℹ️ Bu cihazda tarayıcı içi veritabanı kullanılmaktadır.<br>Yedekleme için Google Drive kullanmanızı öneririz.';
+                    } else {
+                        // Desktop ama desteklenmiyor (Firefox vs)
+                        supportNote.style.display = 'block';
+                        supportNote.style.color = '#fa5252';
+                        supportNote.innerHTML = '⚠️ Tarayıcınız yerel klasör erişimini desteklemiyor.';
+                    }
+                }
             }
 
             // 3. Sıfırla Butonu
@@ -916,8 +944,7 @@ class Dashboard {
             // ─── Mobil bölümünü göster/gizle ─────────────────────
             const mobileSection = document.getElementById('mobile-storage-section');
             if (mobileSection) {
-                const platform = window.CloudStorageManager ? window.CloudStorageManager.detect() : { isMobile: false, hasFileSystem: true };
-                if (platform.isMobile || !platform.hasFileSystem) {
+                if (platform.isMobile || !isFileSystemSupported) {
                     mobileSection.style.display = 'block';
                 } else {
                     mobileSection.style.display = 'none';

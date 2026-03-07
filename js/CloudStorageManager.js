@@ -155,8 +155,11 @@ class CloudStorageManager {
         let syncCount = 0;
 
         for (const board of boards) {
-            const meta = await fsm.getSyncMetadata(board.id);
-            if (!meta) continue;
+            let meta = await fsm.getSyncMetadata(board.id);
+            if (!meta) {
+                await fsm.updateSyncMetadata(board.id);
+                meta = await fsm.getSyncMetadata(board.id);
+            }
 
             const needsUpload = !meta.googleDriveFileId || (meta.lastModifiedLocally > meta.lastSyncedTime);
 
@@ -252,9 +255,12 @@ class CloudStorageManager {
                 });
                 const content = await res.json();
                 await fsm.saveItem(`wb_content_${board.id}`, content);
+                
+                // CRITICAL: Ensure we associate the fileId locally after restore
                 await fsm.setSyncMetadata(board.id, {
                     googleDriveFileId: boardFile.id,
-                    lastSyncedTime: Date.now()
+                    lastSyncedTime: Date.now(),
+                    lastModifiedLocally: board.lastModified || Date.now()
                 });
             }
         }
