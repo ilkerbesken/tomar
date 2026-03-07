@@ -1,228 +1,205 @@
 /**
- * FileSystemManager - Handles persistent storage using local folders (File System Access API)
- * or falls back to IndexedDB for universal support (Firefox, Safari, Mobile).
+ * FileSystemManager - Handles persistent storage using IndexedDB (via Dexie.js)
+ * This is a Local-First architecture, suitable for iPad/Mobile and Desktop.
+ * Native File System Access API is now an optional backup/sync destination.
  */
 class FileSystemManager {
     constructor() {
-        this.mode = 'native'; // 'native' (folder) or 'indexeddb' (fallback)
-        this.dirHandle = null;
+        this.mode = 'indexeddb';
         this.db = null;
         this._initialized = false;
         this.onStorageChange = null;
+        this.dirHandle = null;
     }
 
     async init() {
         if (this._initialized) return;
 
-        // 1. Check if Native File System is supported
-        if (!window.showDirectoryPicker) {
-            this.mode = 'indexeddb';
-        }
+        // Initialize Dexie
+        this.db = new Dexie("TomarDB");
+        this.db.version(1).stores({
+            settings: 'key',
+            data: 'key'
+        });
 
-        // 2. Initialize Internal DB to store the folder handle (so user doesn't pick every time)
-        this.db = await this._initMetaDB();
+        // Version 2: Add metadata for cloud sync if needed
+        this.db.version(2).stores({
+            settings: 'key',
+            data: 'key',
+            syncMetadata: 'id' // { id, lastModifiedLocally, googleDriveFileId, lastSyncedTime }
+        }).upgrade(tx => {
+            // Future migrations
+        });
 
-        if (this.mode === 'native') {
-            const savedHandle = await this._getStoredHandle();
+        await this.db.open();
+
+        // Check for stored native handle (legacy or optional backup)
+        if (window.showDirectoryPicker) {
+            const savedHandle = await this.db.settings.get('folder_handle');
             if (savedHandle) {
-                this.storedHandle = savedHandle; // Keep it even if permission is not granted yet
-                // Check if we still have permission
-                if (await this._verifyPermission(savedHandle)) {
-                    this.dirHandle = savedHandle;
+                this.storedHandle = savedHandle.value;
+                if (await this._verifyPermission(this.storedHandle)) {
+                    this.dirHandle = this.storedHandle;
+                    this.mode = 'native';
                 }
             }
         }
 
         this._initialized = true;
-        console.log(`Storage initialized in [${this.mode}] mode.`);
+        console.log(`[FileSystemManager] Initialized in ${this.mode} mode.`);
+
+        // Initial sync from localStorage if first time
+        await this._checkInitialMigration();
     }
 
-    async _initMetaDB() {
-        return new Promise((resolve, reject) => {
-            const request = indexedDB.open('wb_storage_meta', 1);
-            request.onupgradeneeded = (e) => {
-                const db = e.target.result;
-                if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings');
-                if (!db.objectStoreNames.contains('fallback_data')) db.createObjectStore('fallback_data');
-            };
-            request.onsuccess = (e) => resolve(e.target.result);
-            request.onerror = (e) => reject(e.error);
-        });
-    }
-
-    async _getStoredHandle() {
-        return new Promise((resolve) => {
-            const tx = this.db.transaction('settings', 'readonly');
-            const req = tx.objectStore('settings').get('folder_handle');
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => resolve(null);
-        });
+    async _checkInitialMigration() {
+        const migrated = await this.db.settings.get('migrated_from_local');
+        if (!migrated) {
+            console.log('[FileSystemManager] Performing initial migration from localStorage...');
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key.startsWith('wb_') || key.startsWith('tomar_')) {
+                    try {
+                        const val = JSON.parse(localStorage.getItem(key));
+                        await this.saveItem(key, val, true); // skip sync during migration
+                    } catch (e) {
+                        // Not JSON, skip
+                    }
+                }
+            }
+            await this.db.settings.put({ key: 'migrated_from_local', value: true });
+        }
     }
 
     async _verifyPermission(handle) {
-        const options = { mode: 'readwrite' };
-        if ((await handle.queryPermission(options)) === 'granted') return true;
-        // We don't call requestPermission here automatically as it needs user gesture
-        return false;
-    }
-
-    /**
-     * Re-requests permission for a stored handle.
-     * Must be called from a user gesture.
-     */
-    async requestStoredPermission() {
-        if (!this.storedHandle) return false;
-
         try {
             const options = { mode: 'readwrite' };
-            const status = await this.storedHandle.requestPermission(options);
+            return (await handle.queryPermission(options)) === 'granted';
+        } catch (e) { return false; }
+    }
+
+    async requestStoredPermission() {
+        if (!this.storedHandle) return false;
+        try {
+            const status = await this.storedHandle.requestPermission({ mode: 'readwrite' });
             if (status === 'granted') {
                 this.dirHandle = this.storedHandle;
+                this.mode = 'native';
                 if (this.onStorageChange) this.onStorageChange();
                 return true;
             }
             return false;
-        } catch (e) {
-            console.error('Permission request failed', e);
-            return false;
-        }
+        } catch (e) { return false; }
     }
 
-    /**
-     * Triggers the folder picker dialog
-     */
     async pickStorageFolder() {
-        if (this.mode === 'indexeddb') {
-            alert('Tarayıcınız yerel klasör erişimini desteklemiyor. Verileriniz güvenli bir şekilde tarayıcı veritabanında (IndexedDB) tutulmaya devam edecek.');
+        if (!window.showDirectoryPicker) {
+            alert('Tarayıcınız yerel klasör erişimini desteklemiyor. Dexie/IndexedDB kullanılmaya devam edilecek.');
             return false;
         }
-
-        // If we already have a stored handle but no permission, try to request it first
-        if (this.storedHandle && !this.dirHandle) {
-            const success = await this.requestStoredPermission();
-            if (success) return true;
-        }
-
         try {
-            const handle = await window.showDirectoryPicker({
-                mode: 'readwrite'
-            });
-
-            // Store handle in MetaDB
-            const tx = this.db.transaction('settings', 'readwrite');
-            tx.objectStore('settings').put(handle, 'folder_handle');
-
+            const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+            await this.db.settings.put({ key: 'folder_handle', value: handle });
             this.dirHandle = handle;
             this.storedHandle = handle;
+            this.mode = 'native';
 
-            // Sync current items if user switched to a folder
-            await this.syncFromLocalStorageToFolder();
+            // Sync current items to NEW folder
+            await this.syncToFolder();
 
             if (this.onStorageChange) this.onStorageChange();
             return true;
-        } catch (e) {
-            console.error('Folder pick failed', e);
-            return false;
-        }
+        } catch (e) { return false; }
     }
 
-    async syncFromLocalStorageToFolder() {
+    async syncToFolder() {
         if (!this.dirHandle) return;
-
-        // Keys to sync
-        const keys = ['wb_boards', 'wb_folders', 'wb_view_settings', 'wb_expanded_folders'];
-        for (const key of keys) {
-            const val = localStorage.getItem(key);
-            if (val) await this.saveItem(key, JSON.parse(val));
-        }
-
-        // Boards content
-        const boards = JSON.parse(localStorage.getItem('wb_boards') || '[]');
-        for (const b of boards) {
-            const contentKey = `wb_content_${b.id}`;
-            const content = localStorage.getItem(contentKey);
-            if (content) await this.saveItem(contentKey, JSON.parse(content));
+        const allData = await this.db.data.toArray();
+        for (const item of allData) {
+            await this._saveToNative(item.key, item.value);
         }
     }
 
-    async saveItem(key, value) {
-        // ALWAYS update localStorage as a synchronous bridge for legacy parts of the app
+    async saveItem(key, value, skipNative = false) {
+        // 1. Always save to Dexie (Primary)
+        await this.db.data.put({ key, value });
+
+        // 2. Metadata update for sync (if it's a board or board content)
+        if (key.startsWith('wb_content_')) {
+            const boardId = key.replace('wb_content_', '');
+            await this.updateSyncMetadata(boardId);
+        }
+
+        // 3. Mirror to LocalStorage for legacy sync access (optional, but keeps app working)
         try {
             localStorage.setItem(key, JSON.stringify(value));
+        } catch (e) { }
+
+        // 4. Save to Native folder if active
+        if (!skipNative && this.mode === 'native' && this.dirHandle) {
+            await this._saveToNative(key, value);
+        }
+    }
+
+    async _saveToNative(key, value) {
+        try {
+            const fileHandle = await this.dirHandle.getFileHandle(`${key}.json`, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(JSON.stringify(value));
+            await writable.close();
         } catch (e) {
-            console.warn('LocalStorage mirror failed');
+            console.warn('[FileSystemManager] Native save failed, using IndexedDB only.');
         }
-
-        if (this.mode === 'native' && this.dirHandle) {
-            try {
-                const fileName = `${key}.json`;
-                const fileHandle = await this.dirHandle.getFileHandle(fileName, { create: true });
-                const writable = await fileHandle.createWritable();
-                await writable.write(JSON.stringify(value));
-                await writable.close();
-                return;
-            } catch (e) {
-                console.error('Native save failed', e);
-            }
-        }
-
-        // Fallback to IndexedDB
-        return new Promise((resolve) => {
-            const tx = this.db.transaction('fallback_data', 'readwrite');
-            tx.objectStore('fallback_data').put(value, key);
-            tx.oncomplete = () => resolve();
-        });
     }
 
     async getItem(key, defaultValue) {
-        // 1. Try LocalStorage first for instant (sync) result
-        const local = localStorage.getItem(key);
-        let finalVal = local ? JSON.parse(local) : defaultValue;
-
-        // 2. Refresh from Native Folder/IndexedDB in background or if local is empty
-        if (this.mode === 'native' && this.dirHandle) {
-            try {
-                const fileHandle = await this.dirHandle.getFileHandle(`${key}.json`);
-                const file = await fileHandle.getFile();
-                const text = await file.text();
-                const nativeVal = JSON.parse(text);
-                // Sync back to local if they differ
-                if (text !== local) {
-                    localStorage.setItem(key, text);
-                }
-                return nativeVal;
-            } catch (e) {
-                if (e.name !== 'NotFoundError') console.error('Native read error', e);
-            }
+        // Try Dexie first
+        const item = await this.db.data.get(key);
+        if (item !== undefined) {
+            // Also update localStorage mirror
+            localStorage.setItem(key, JSON.stringify(item.value));
+            return item.value;
         }
 
-        return new Promise((resolve) => {
-            const tx = this.db.transaction('fallback_data', 'readonly');
-            const req = tx.objectStore('fallback_data').get(key);
-            req.onsuccess = () => {
-                if (req.result !== undefined) {
-                    const dbVal = req.result;
-                    // Sync to local
-                    localStorage.setItem(key, JSON.stringify(dbVal));
-                    resolve(dbVal);
-                } else {
-                    resolve(finalVal);
-                }
-            };
-            req.onerror = () => resolve(finalVal);
-        });
+        // Fallback to legacy LocalStorage if not in Dexie (unlikely after migration)
+        const local = localStorage.getItem(key);
+        if (local) {
+            const val = JSON.parse(local);
+            await this.db.data.put({ key, value: val });
+            return val;
+        }
+
+        return defaultValue;
     }
 
     async removeItem(key) {
+        await this.db.data.delete(key);
+        localStorage.removeItem(key);
         if (this.mode === 'native' && this.dirHandle) {
             try {
                 await this.dirHandle.removeEntry(`${key}.json`);
             } catch (e) { }
         }
+    }
 
-        const tx = this.db.transaction('fallback_data', 'readwrite');
-        tx.objectStore('fallback_data').delete(key);
-        localStorage.removeItem(key);
+    // --- Sync Metadata Helpers ---
+    async updateSyncMetadata(boardId) {
+        const meta = await this.db.syncMetadata.get(boardId) || {
+            id: boardId,
+            googleDriveFileId: null,
+            lastSyncedTime: 0
+        };
+        meta.lastModifiedLocally = Date.now();
+        await this.db.syncMetadata.put(meta);
+    }
+
+    async getSyncMetadata(boardId) {
+        return await this.db.syncMetadata.get(boardId);
+    }
+
+    async setSyncMetadata(boardId, data) {
+        const current = await this.getSyncMetadata(boardId) || { id: boardId };
+        await this.db.syncMetadata.put({ ...current, ...data });
     }
 }
 

@@ -136,69 +136,130 @@ class CloudStorageManager {
         }
     }
 
-    // ─── Google Drive'a Kaydet ───────────────────────────────────
-    async saveToGoogleDrive() {
+    // ─── Google Drive: Senkronizasyon (Incremental) ──────────────
+    /**
+     * Yerel veritabanındaki (IndexedDB) her notu Drive ile senkronize eder.
+     */
+    async syncWithGoogleDrive() {
         await this._ensureToken();
-
+        const fsm = window.fileSystemManager;
         const folderId = await this._getOrCreateTomarFolder();
-        const data = await this._collectAllData();
-        const json = JSON.stringify(data);
-        const fileName = 'tomar-notlar.json';
 
-        // Tomar klasörü içindeki varolan dosyayı bul
-        const existingFile = await this._findFileInFolder(fileName, folderId);
+        // 1. Temel verileri senkronize et (boards, folders, settings)
+        // Bunlar küçük olduğu için tek bir "manifest" dosyasında tutabiliriz veya ayrı ayrı.
+        // Şimdilik board listesini ve klasörleri toplu senkronize edelim.
+        await this._syncManifest(folderId);
 
-        const metadata = existingFile
-            ? { name: fileName }
-            : { name: fileName, parents: [folderId] };
+        // 2. Her board içeriğini tek tek kontrol et
+        const boards = await fsm.getItem('wb_boards', []);
+        let syncCount = 0;
 
-        const blob = new Blob([json], { type: 'application/json' });
+        for (const board of boards) {
+            const meta = await fsm.getSyncMetadata(board.id);
+            if (!meta) continue;
+
+            const needsUpload = !meta.googleDriveFileId || (meta.lastModifiedLocally > meta.lastSyncedTime);
+
+            if (needsUpload) {
+                console.log(`[Sync] Uploading board: ${board.name} (${board.id})`);
+                const content = await fsm.getItem(`wb_content_${board.id}`, null);
+                if (!content) continue;
+
+                const fileId = await this._uploadBoardToDrive(board, content, folderId, meta.googleDriveFileId);
+
+                await fsm.setSyncMetadata(board.id, {
+                    googleDriveFileId: fileId,
+                    lastSyncedTime: Date.now()
+                });
+                syncCount++;
+            }
+        }
+
+        return { success: true, message: syncCount > 0 ? `${syncCount} not güncellendi.` : 'Her şey güncel.' };
+    }
+
+    async _syncManifest(folderId) {
+        const fsm = window.fileSystemManager;
+        const manifest = {
+            boards: await fsm.getItem('wb_boards', []),
+            folders: await fsm.getItem('wb_folders', []),
+            viewSettings: await fsm.getItem('wb_view_settings', {}),
+            customCovers: await fsm.getItem('wb_custom_covers', [])
+        };
+        const fileName = 'tomar-manifest.json';
+        const existing = await this._findFileInFolder(fileName, folderId);
+        await this._uploadToDrive(fileName, manifest, folderId, existing?.id);
+    }
+
+    async _uploadBoardToDrive(board, content, folderId, existingFileId) {
+        const fileName = `board_${board.id}.json`;
+        return await this._uploadToDrive(fileName, content, folderId, existingFileId);
+    }
+
+    async _uploadToDrive(fileName, data, folderId, existingFileId) {
+        const metadata = existingFileId ? { name: fileName } : { name: fileName, parents: [folderId] };
+        const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
         const form = new FormData();
         form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
         form.append('file', blob);
 
-        const url = existingFile
-            ? `https://www.googleapis.com/upload/drive/v3/files/${existingFile.id}?uploadType=multipart`
+        const url = existingFileId
+            ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`
             : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
 
-        const method = existingFile ? 'PATCH' : 'POST';
-
         const res = await fetch(url, {
-            method,
+            method: existingFileId ? 'PATCH' : 'POST',
             headers: { Authorization: `Bearer ${this.gdriveToken}` },
             body: form,
         });
 
-        if (!res.ok) {
-            const errText = await res.text();
-            throw new Error(`Google Drive kayıt hatası: ${errText}`);
-        }
-
-        return { success: true, message: 'Google Drive / Tomar klasörüne kaydedildi!' };
+        if (!res.ok) throw new Error(`Drive upload failed: ${res.status}`);
+        const result = await res.json();
+        return result.id;
     }
 
-    // ─── Google Drive'dan Yükle ──────────────────────────────────
+    // --- Legacy methods updated to use the new logic or kept for compatibility ---
+    async saveToGoogleDrive() {
+        return this.syncWithGoogleDrive();
+    }
+
     async loadFromGoogleDrive() {
         await this._ensureToken();
-
         const folderId = await this._getOrCreateTomarFolder();
-        const fileName = 'tomar-notlar.json';
-        const file = await this._findFileInFolder(fileName, folderId);
 
-        if (!file) {
-            return { success: false, message: 'Drive / Tomar klasöründe kayıtlı veri bulunamadı.' };
+        // 1. Manifest yükle
+        const manifestFile = await this._findFileInFolder('tomar-manifest.json', folderId);
+        if (!manifestFile) return { success: false, message: 'Drive\'da yedek bulunamadı.' };
+
+        const manifestRes = await fetch(`https://www.googleapis.com/drive/v3/files/${manifestFile.id}?alt=media`, {
+            headers: { Authorization: `Bearer ${this.gdriveToken}` }
+        });
+        const manifest = await manifestRes.json();
+
+        const fsm = window.fileSystemManager;
+        await fsm.saveItem('wb_boards', manifest.boards);
+        await fsm.saveItem('wb_folders', manifest.folders);
+        await fsm.saveItem('wb_view_settings', manifest.viewSettings);
+        await fsm.saveItem('wb_custom_covers', manifest.customCovers);
+
+        // 2. Board içeriklerini yükle (Lazy or Immediate?)
+        // Şimdilik basitleştirelim ve tümünü çekelim
+        for (const board of manifest.boards) {
+            const boardFile = await this._findFileInFolder(`board_${board.id}.json`, folderId);
+            if (boardFile) {
+                const res = await fetch(`https://www.googleapis.com/drive/v3/files/${boardFile.id}?alt=media`, {
+                    headers: { Authorization: `Bearer ${this.gdriveToken}` }
+                });
+                const content = await res.json();
+                await fsm.saveItem(`wb_content_${board.id}`, content);
+                await fsm.setSyncMetadata(board.id, {
+                    googleDriveFileId: boardFile.id,
+                    lastSyncedTime: Date.now()
+                });
+            }
         }
 
-        const fileRes = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
-            { headers: { Authorization: `Bearer ${this.gdriveToken}` } }
-        );
-
-        if (!fileRes.ok) throw new Error('Dosya indirilemedi.');
-
-        const data = await fileRes.json();
-        await this._applyImportedData(data);
-        return { success: true, message: 'Google Drive / Tomar klasöründen yüklenedildi!' };
+        return { success: true, message: 'Tüm veriler Drive\'dan geri yüklendi.' };
     }
 
     // ─── Yardımcı: Tomar klasörünü bul veya oluştur ───────────────
@@ -212,44 +273,24 @@ class CloudStorageManager {
         const searchUrl = 'https://www.googleapis.com/drive/v3/files?' +
             new URLSearchParams({ q: searchQuery, fields: 'files(id,name)' }).toString();
 
-        console.log('[Tomar] Klasör aranıyor...', searchUrl);
         const searchRes = await fetch(searchUrl, { headers });
 
         if (!searchRes.ok) {
-            const errBody = await searchRes.text();
-            console.error('[Tomar] Klasör araması başarısız:', searchRes.status, errBody);
             this.gdriveToken = null;
             localStorage.removeItem('tomar_gdrive_token');
-            throw new Error(`Google Drive bağlantısı kesildi (${searchRes.status}). Lütfen tekrar deneyin.`);
+            throw new Error(`Google Drive bağlantısı kesildi. Lütfen tekrar deneyin.`);
         }
 
         const searchData = await searchRes.json();
-        console.log('[Tomar] Klasör arama sonucu:', searchData);
-
-        if (searchData.files?.length > 0) {
-            console.log('[Tomar] Mevcut klasör bulundu:', searchData.files[0].id);
-            return searchData.files[0].id;
-        }
+        if (searchData.files?.length > 0) return searchData.files[0].id;
 
         // Yoksa oluştur
-        console.log('[Tomar] Klasör bulunamadı, oluşturuluyor...');
-        const createRes = await fetch(
-            'https://www.googleapis.com/drive/v3/files',
-            {
-                method: 'POST',
-                headers: { ...headers, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: folderName, mimeType: folderMime })
-            }
-        );
-
-        if (!createRes.ok) {
-            const errBody = await createRes.text();
-            console.error('[Tomar] Klasör oluşturma başarısız:', createRes.status, errBody);
-            throw new Error(`Tomar klasörü oluşturulamadı (${createRes.status}): ${errBody}`);
-        }
-
+        const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: folderName, mimeType: folderMime })
+        });
         const folder = await createRes.json();
-        console.log('[Tomar] Klasör oluşturuldu:', folder.id, folder.name);
         return folder.id;
     }
 
@@ -260,19 +301,10 @@ class CloudStorageManager {
         const url = 'https://www.googleapis.com/drive/v3/files?' +
             new URLSearchParams({ q: query, fields: 'files(id,name)' }).toString();
 
-        console.log('[Tomar] Dosya aranıyor...', url);
         const res = await fetch(url, { headers });
-
-        if (!res.ok) {
-            const errBody = await res.text();
-            console.error('[Tomar] Dosya araması başarısız:', res.status, errBody);
-            this.gdriveToken = null;
-            localStorage.removeItem('tomar_gdrive_token');
-            throw new Error(`Google Drive bağlantısı kesildi (${res.status}). Lütfen tekrar deneyin.`);
-        }
+        if (!res.ok) return null;
 
         const data = await res.json();
-        console.log('[Tomar] Dosya arama sonucu:', data);
         return data.files?.[0] || null;
     }
 
@@ -283,48 +315,24 @@ class CloudStorageManager {
         const folders = await fsm.getItem('wb_folders', []);
         const viewSettings = await fsm.getItem('wb_view_settings', {});
         const customCovers = await fsm.getItem('wb_custom_covers', []);
-
-        // Her notun içeriğini de ekle
         const contents = {};
         for (const board of boards) {
             const content = await fsm.getItem(`wb_content_${board.id}`, null);
-            if (content !== null) {
-                contents[board.id] = content;
-            }
+            if (content) contents[board.id] = content;
         }
-
-        return {
-            version: 2,
-            exportDate: new Date().toISOString(),
-            boards,
-            folders,
-            viewSettings,
-            customCovers,
-            contents
-        };
+        return { version: 2, boards, folders, viewSettings, customCovers, contents };
     }
 
     // ─── Yardımcı: İçe aktarılan veriyi uygula ──────────────────
     async _applyImportedData(data) {
-        if (!data || !data.version) throw new Error('Geçersiz yedek formatı.');
-
         const fsm = window.fileSystemManager;
-
         if (data.boards) await fsm.saveItem('wb_boards', data.boards);
         if (data.folders) await fsm.saveItem('wb_folders', data.folders);
         if (data.viewSettings) await fsm.saveItem('wb_view_settings', data.viewSettings);
-        if (data.customCovers) await fsm.saveItem('wb_custom_covers', data.customCovers);
-
-        // İçerikleri kaydet
         if (data.contents) {
             for (const [boardId, content] of Object.entries(data.contents)) {
                 await fsm.saveItem(`wb_content_${boardId}`, content);
             }
-        }
-
-        // v1 formatı (eski) için geriye uyumluluk
-        if (data.notes && !data.boards) {
-            await fsm.saveItem('wb_boards', data.notes);
         }
     }
 }

@@ -24,6 +24,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <!-- pako for .tom file format (gzip compression) -->
     <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+    <!-- Dexie.js for robust IndexedDB management -->
+    <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script>
 </head>
 
 <body>
@@ -1386,13 +1388,13 @@
                             style="justify-content: center; height: 42px; font-size: 13px; gap: 8px;">
                             <img src="https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg"
                                 width="16" style="vertical-align: middle; margin-right: 6px;">
-                            Google Drive'a Kaydet
+                            Buluta Eşitle (Yedekle)
                         </button>
                         <button id="btn-gdrive-load" class="btn btn-secondary"
                             style="justify-content: center; height: 42px; font-size: 13px; gap: 8px;">
                             <img src="https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg"
                                 width="16" style="vertical-align: middle; margin-right: 6px;">
-                            Google Drive'dan Yükle
+                            Buluttan Geri Yükle
                         </button>
                         <button id="btn-gdrive-signout" class="btn"
                             style="justify-content: center; height: 34px; font-size: 11px; color: #aaa; background: none; border: 1px solid #eee; display: none;">

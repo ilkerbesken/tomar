@@ -65,6 +65,14 @@ class Dashboard {
 
         this.init();
         this.setupStorageSettings();
+
+        // Optional silent sync on start if logged in
+        if (localStorage.getItem('tomar_gdrive_token')) {
+            setTimeout(async () => {
+                const cloud = new CloudStorageManager(this.app);
+                cloud.syncWithGoogleDrive().catch(() => { });
+            }, 1000);
+        }
     }
 
     // Sync wrappers for legacy components
