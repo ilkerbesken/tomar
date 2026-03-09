@@ -162,6 +162,11 @@ class CloudStorageManager {
 
                         // 1. Klasörleri Senkronize Et (Merge)
                         for (const rf of remoteFolders) {
+                            if (locallyDeletedIds.includes(rf.id)) {
+                                // Yerelde az önce silindi, manifest henüz güncel değil
+                                continue;
+                            }
+                            
                             const lfIndex = localFolders.findIndex(f => f.id === rf.id);
                             if (lfIndex === -1) {
                                 // Yeni klasör (remote'da var, yerelde yok)
@@ -286,7 +291,8 @@ class CloudStorageManager {
 
             // ── Temizlik: Artık silindiği kesinleşen ID'leri listeden çıkar ──
             if (locallyDeletedIds.length > 0) {
-                // Garbage collect sonrası yereldeki listeyi temizle
+                // Sadece başarıyla işlenenleri değil, şimdilik hepsini temizliyoruz 
+                // (Garbage collect hata verse bile yerel listeyi şişirmemek için)
                 await fsm.saveItem('wb_deleted_ids', [], true);
             }
 
@@ -670,61 +676,69 @@ class CloudStorageManager {
                     fields: 'files(id,name,appProperties,mimeType,parents,createdTime)' 
                 }).toString();
 
-            const res = await fetch(listUrl, { headers });
-            if (!res.ok) return;
-            const data = await res.json();
-            
             const boardIds = new Set(localBoards.map(b => b.id));
             const folderIds = new Set(localFolders.map(f => f.id));
             
-            for (const file of (data.files || [])) {
-                // Sadece Tomar klasörü altındakileri kontrol et (manifest hariç)
-                if (file.name === 'tomar-manifest.json') continue;
+            let pageToken = null;
+            do {
+                const listUrl = 'https://www.googleapis.com/drive/v3/files?' +
+                    new URLSearchParams({ 
+                        q: "trashed=false", 
+                        fields: 'files(id,name,appProperties,mimeType,parents,createdTime),nextPageToken',
+                        pageToken: pageToken || ''
+                    }).toString();
+
+                const res = await fetch(listUrl, { headers });
+                if (!res.ok) break;
+                const data = await res.json();
+                pageToken = data.nextPageToken;
                 
-                const type = file.appProperties?.type;
-                const boardId = file.appProperties?.boardId;
-                const folderId = file.appProperties?.folderId;
+                for (const file of (data.files || [])) {
+                    // Sadece Tomar klasörü altındakileri kontrol et (manifest hariç)
+                    if (file.name === 'tomar-manifest.json' || file.name === 'tomar-manifest-v2.json') continue;
+                    
+                    const type = file.appProperties?.type;
+                    const boardId = file.appProperties?.boardId;
+                    const folderId = file.appProperties?.folderId;
 
-                let shouldDelete = false;
+                    let shouldDelete = false;
 
-                const createdTime = new Date(file.createdTime).getTime();
-                const now = Date.now();
-                const isNew = (now - createdTime < 120000);
+                    const createdTime = new Date(file.createdTime).getTime();
+                    const now = Date.now();
+                    const isNew = (now - createdTime < 60000); // 1 minute buffer for very new items
 
-                if (type === 'board') {
-                    // Sadece 'boardId'si olan ve listede olmayanları sil
-                    if (boardId) {
-                        if (!boardIds.has(boardId)) {
-                            // İstisna: Eğer yerelde az önce sildiğimizi biliyorsak 2 dk kuralını atla
-                            if (locallyDeletedIds.includes(boardId)) {
-                                shouldDelete = true;
-                            } else if (!isNew) {
-                                shouldDelete = true;
+                    if (type === 'board') {
+                        if (boardId) {
+                            if (!boardIds.has(boardId)) {
+                                if (locallyDeletedIds.includes(boardId) || !isNew) {
+                                    shouldDelete = true;
+                                }
+                            }
+                        }
+                    } else if (type === 'folder') {
+                        if (folderId && file.name !== 'Tomar' && file.name !== '.settings') {
+                            if (!folderIds.has(folderId)) {
+                                if (locallyDeletedIds.includes(folderId) || !isNew) {
+                                    shouldDelete = true;
+                                }
                             }
                         }
                     }
-                } else if (type === 'folder') {
-                    // Sadece 'folderId'si olan ve listede olmayanları sil (Önemli klasörleri koru)
-                    if (folderId && file.name !== 'Tomar' && file.name !== '.settings') {
-                        if (!folderIds.has(folderId)) {
-                            // İstisna: Yerelde az önce silindiyse anında sil
-                            if (locallyDeletedIds.includes(folderId)) {
-                                shouldDelete = true;
-                            } else if (!isNew) {
-                                shouldDelete = true;
-                            }
+
+                    if (shouldDelete) {
+                        console.log(`[CloudSync] Garbage Collection: Çöpe Taşınıyor -> ${file.name}`);
+                        try {
+                            await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}`, {
+                                method: 'PATCH',
+                                headers: { ...headers, 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ trashed: true })
+                            });
+                        } catch (e) {
+                            console.warn(`[CloudSync] Dosya çöpe atılamadı (${file.name}):`, e);
                         }
                     }
                 }
-
-                if (shouldDelete) {
-                    console.log(`[CloudSync] Garbage Collection: Siliniyor -> ${file.name}`);
-                    await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}`, {
-                        method: 'DELETE',
-                        headers
-                    });
-                }
-            }
+            } while (pageToken);
         } catch (e) {
             console.warn('[CloudSync] Garbage Collection hatası:', e);
         }

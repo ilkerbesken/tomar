@@ -1,0 +1,52 @@
+En son sync özelligi ekledim.
+
+drive icinde uygulamada olusturdugum her dosya ve klasör olusuyor. Ama silme islemi iyi calismiyor. Silme isleminden sonra olusturdugum dosya ve klasörlerde ise tutarsizliklar var.
+
+Bu sorunu en dogru sekilde nasil cözebilirim?
+
+Uygulamadaki dashboardda hangi klasör ve dosya olusturuldu ya da silindiyse drive ve yerel klasörde de bu anlik olarak gerceklessin istiyorum.
+
+asagida birkac öneri bulacaksin. en mantiklisi ve en az eforla cözüm olacak cözüm ile ilerleyelim.
+
+1. Webhook (Push Notifications) Kullanımı
+Silme işlemlerinde ve anlık güncellemelerde yaşanan tutarsızlığın temel sebebi, uygulamanın Drive'da yapılan değişikliklerden haberdar olmaması veya yerel silme işleminin Drive API'ye doğru iletilmemesidir.
+
+Çözüm: Google Drive API'nin "Push Notifications" (Webhooks) özelliğini kullanmalısın. Drive'daki bir dosya veya klasörde değişiklik (silme, isim değiştirme vb.) olduğunda Google senin belirlediğin bir URL'ye (endpoint) bildirim gönderir. Bu sayede uygulaman anlık olarak tetiklenir.
+
+2. Silme İşlemi İçin Strateji: "Trash" vs "Delete"
+Drive API'de iki tür silme vardır:
+
+Trash (Çöpe Atma): files.update metodu ile trashed: true set edilir. Bu daha güvenlidir çünkü kullanıcı yanlışlıkla silerse geri alabilir.
+
+Delete (Kalıcı Silme): files.delete metodu dosyayı tamamen yok eder.
+
+Öneri: Tutarsızlıkları önlemek için yerelde silinen bir dosyanın ID'sini tutup Drive tarafında önce trash komutu gönder. Eğer işlem başarılı dönerse yerel kaydı temizle.
+
+3. "Changes: list" Metodu (Polling alternatifi)
+Webhooks kurmak karmaşık gelirse, Changes: list metodunu kullanmalısın. Bu metod, son senkronizasyondan bu yana neyin değiştiğini (yeni dosya, silinen dosya vb.) sana bir liste halinde sunar.
+
+Bir startPageToken alırsın.
+
+Belirli aralıklarla (veya uygulama açıldığında) bu token'dan itibaren nelerin değiştiğini sorgularsın.
+
+Dönen sonuçlarda removed: true olan dosyaları yerel klasöründen de silersin.
+
+4. Veritabanı ve Mapping Tablosu
+Dosya yolları (path) üzerinden eşleştirme yapmak hataya çok müsaittir (klasör adı değiştiğinde tüm alt yollar bozulur).
+
+Çözüm: Yerel veritabanında (SQLite vb.) her dosya için şu eşleşmeyi tut:
+Yerel_Path | Google_Drive_File_ID | Last_Sync_Hash (MD5)
+
+Silme işlemi yaparken dosya yoluna değil, doğrudan File ID'ye göre işlem yaparsan tutarsızlıkların önüne geçersin.
+
+5. Yarış Durumlarını (Race Conditions) Engelleme
+Eğer hem yerelde hem Drive'da aynı anda işlem yapılıyorsa "çakışma" (conflict) oluşur.
+
+Öneri: Bir dosya üzerinde işlem yapılırken o dosyayı "Locked" durumuna getir veya bir işlem kuyruğu (Queue) oluştur. Silme işlemi bitmeden aynı isimle yeni dosya oluşturulmasına izin verme.
+
+Özet Uygulama Akışı:
+Dashboard'dan Silme: Kullanıcı sil tuşuna basar -> Yerel dosya silinir -> Drive API delete çağrısı yapılır -> Başarılıysa veritabanından ID silinir.
+
+Hata Yönetimi: Eğer Drive'dan silme başarısız olursa (internet yoksa vb.), işlemi bir "Pending Tasks" listesine al ve bağlantı geldiğinde tekrar dene.
+
+Anlık Takip: Dosya sistemini (Local FS) izlemek için (Node.js kullanıyorsan chokidar, Python ise watchdog) kütüphanelerini kullan. Yereldeki her unlink (silme) olayını Drive API'ye anında gönder.

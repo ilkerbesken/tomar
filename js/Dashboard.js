@@ -1164,12 +1164,22 @@ class Dashboard {
         this.folders = this.folders.filter(f => !idsToDelete.includes(f.id));
         await this.saveDataAsync('wb_folders', this.folders);
 
-        // Senkronizasyon için silindiğini işaretle
+        // Senkronizasyon için silindiğini işaretle (Klasörler + Boardlar)
         const deletedIds = await this.loadDataAsync('wb_deleted_ids', []);
         let changed = false;
+        
+        // Klasör ID'lerini ekle
         idsToDelete.forEach(id => {
             if (!deletedIds.includes(id)) {
                 deletedIds.push(id);
+                changed = true;
+            }
+        });
+
+        // Bu klasörlerdeki board ID'lerini de ekle
+        boardsInFolders.forEach(b => {
+            if (!deletedIds.includes(b.id)) {
+                deletedIds.push(b.id);
                 changed = true;
             }
         });
@@ -1558,12 +1568,23 @@ class Dashboard {
                 }
             }));
 
-            const idsToClose = trashedBoards.map(b => b.id);
+            const idsToRemove = trashedBoards.map(b => b.id);
             this.boards = this.boards.filter(b => !b.deleted);
             await this.saveDataAsync('wb_boards', this.boards);
 
+            // Senkronizasyon için silindiğini işaretle
+            const deletedIds = await this.loadDataAsync('wb_deleted_ids', []);
+            let changed = false;
+            idsToRemove.forEach(id => {
+                if (!deletedIds.includes(id)) {
+                    deletedIds.push(id);
+                    changed = true;
+                }
+            });
+            if (changed) await this.saveDataAsync('wb_deleted_ids', deletedIds);
+
             if (this.app.tabManager) {
-                idsToClose.forEach(id => this.app.tabManager.closeTab(id));
+                idsToRemove.forEach(id => this.app.tabManager.closeTab(id));
             }
 
             this.renderBoards();
