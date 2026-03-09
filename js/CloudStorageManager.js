@@ -128,26 +128,76 @@ class CloudStorageManager {
     }
 
     // ─── Ana Senkronizasyon ───────────────────────────────────────
-    async syncWithGoogleDrive() {
-        if (this.isSyncing) return { success: false, message: 'Senkronizasyon zaten sürüyor.' };
-        this.isSyncing = true;
-        this._folderIdCache = {}; // Her sync'te önbelleği sıfırla
+    async syncWithGoogleDrive(targetId = null) {
+        if (this.isSyncing && !targetId) return { success: false, message: 'Senkronizasyon zaten sürüyor.' };
+        
+        // Eğer bir targetId varsa ve o ID şu an zaten senkronize ediliyorsa bekleyebilir veya kuyruğa alınabilir.
+        // Basitlik için sadece tekil sync'lerin çakışmasını engelliyoruz.
+        if (targetId && this._activeSyncs?.has(targetId)) return { success: false, message: 'Bu öğe zaten senkronize ediliyor.' };
+        
+        if (!this._activeSyncs) this._activeSyncs = new Set();
+        if (targetId) this._activeSyncs.add(targetId);
+        else this.isSyncing = true;
+
+        this._folderIdCache = {}; 
 
         try {
             await this._ensureToken();
             const fsm = window.fileSystemManager;
-
-            // Kök "Tomar" klasörünü al/oluştur
             const tomarFolderId = await this._getOrCreateDriveFolder('Tomar', null);
-
-            // ── PULL: Drive'daki .settings/tomar-manifest.json'u oku ──
-            let syncCount = 0;
             const settingsFolderId = await this._getOrCreateDriveFolder('.settings', tomarFolderId);
+            
+            let syncCount = 0;
+            const locallyDeletedIds = await fsm.getItem('wb_deleted_ids', []);
+
+            // ─── SENARYO A: DELTA SYNC (Sadece bir dosya/klasör değişti) ───
+            if (targetId) {
+                console.log(`[CloudSync] Delta Sync Başlatıldı: ${targetId}`);
+                
+                // 1. Silinmiş mi?
+                if (locallyDeletedIds.includes(targetId)) {
+                    await this._garbageCollect(tomarFolderId, await fsm.getItem('wb_boards', []), await fsm.getItem('wb_folders', []), [targetId]);
+                    await this._syncManifest(settingsFolderId);
+                    return { success: true, delta: true };
+                }
+
+                // 2. Klasör mü?
+                const folders = await fsm.getItem('wb_folders', []);
+                const folder = folders.find(f => f.id === targetId);
+                if (folder) {
+                    await this._ensureDriveFolders(folders, tomarFolderId);
+                    await this._syncManifest(settingsFolderId);
+                    return { success: true, delta: true };
+                }
+
+                // 3. Board mu?
+                const boards = await fsm.getItem('wb_boards', []);
+                const board = boards.find(b => b.id === targetId);
+                if (board) {
+                    const meta = await fsm.getSyncMetadata(board.id) || { id: board.id };
+                    const content = await fsm.getItem(`wb_content_${board.id}`, null);
+                    if (content) {
+                        const driveFileId = await this._uploadBoardTom(board, content, folders, tomarFolderId, meta.googleDriveFileId);
+                        await fsm.setSyncMetadata(board.id, {
+                            googleDriveFileId: driveFileId,
+                            lastSyncedTime: Date.now()
+                        });
+                        await this._syncManifest(settingsFolderId);
+                        return { success: true, delta: true };
+                    }
+                }
+                
+                return { success: false, message: 'ID bulunamadı.' };
+            }
+
+            // ─── SENARYO B: FULL SYNC (Uygulama açılışı veya Genel Yenileme) ───
+            console.log('[CloudSync] Full Sync Başlatıldı...');
             const remoteManifestFile = await this._findFileInFolder('tomar-manifest.json', settingsFolderId);
+            // ... (Full Pull logic starts here from original code)
 
             let localBoards = await fsm.getItem('wb_boards', []);
             let localFolders = await fsm.getItem('wb_folders', []);
-            const locallyDeletedIds = await fsm.getItem('wb_deleted_ids', []);
+            // locallyDeletedIds zaten yukarıda tanımlandı.
 
             if (remoteManifestFile) {
                 try {
@@ -304,14 +354,46 @@ class CloudStorageManager {
 
         } catch (err) {
             console.error('[CloudSync] Genel hata:', err);
+            
+            // Hata Durumu: Pending Queue (Kuyruğa Ekle)
+            if (targetId) {
+                await this._addToPendingQueue(targetId);
+            }
+
             if (err.message?.includes('401') || err.message?.includes('token')) {
                 this.gdriveToken = null;
                 localStorage.removeItem('tomar_gdrive_token');
             }
             return { success: false, message: err.message };
         } finally {
-            this.isSyncing = false;
+            if (targetId) this._activeSyncs.delete(targetId);
+            else this.isSyncing = false;
         }
+    }
+
+    async _addToPendingQueue(id) {
+        const fsm = window.fileSystemManager;
+        const pending = await fsm.getItem('wb_pending_syncs', []);
+        if (!pending.includes(id)) {
+            pending.push(id);
+            await fsm.saveItem('wb_pending_syncs', pending, true);
+            console.log(`[CloudSync] İşlem kuyruğa alındı (Offline/Hata): ${id}`);
+        }
+    }
+
+    async processPendingQueue() {
+        if (!navigator.onLine) return;
+        const fsm = window.fileSystemManager;
+        const pending = await fsm.getItem('wb_pending_syncs', []);
+        if (pending.length === 0) return;
+
+        console.log(`[CloudSync] Kuyruk işleniyor (${pending.length} öğe)...`);
+        const remaining = [];
+        for (const id of pending) {
+            const res = await this.syncWithGoogleDrive(id);
+            if (!res.success) remaining.push(id);
+        }
+        await fsm.saveItem('wb_pending_syncs', remaining, true);
     }
 
     async saveToGoogleDrive() {

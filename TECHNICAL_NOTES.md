@@ -308,7 +308,6 @@ this.state = {
 - Lazy rendering (viewport dışı nesneler)
 
 ### iconlar
-- https://lucide.dev/
 
 ---
 

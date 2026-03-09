@@ -2552,7 +2552,7 @@ class Dashboard {
         const mobileBtn = this.btnSelectAllMobile;
         if (!desktopBtn && !mobileBtn) return;
 
-        const filtered = filteredBoards || this.getFilteredBoards();
+        const filtered = filteredBoards || [];
         const noItems = filtered.length === 0;
 
         [desktopBtn, mobileBtn].forEach(btn => {
@@ -2582,48 +2582,90 @@ class Dashboard {
             }
         });
     }
+
     setupAutoSync() {
         if (!localStorage.getItem('tomar_gdrive_token')) return;
 
         let syncTimer = null;
         const cloud = new CloudStorageManager(this.app);
 
-        // 1. Auto-Push (Debounced)
-        window.fileSystemManager.onSave = () => {
-            if (syncTimer) clearTimeout(syncTimer);
-            syncTimer = setTimeout(async () => {
-                console.log('[AutoSync] Değişiklikler algılandı, buluta aktarılıyor...');
-                const res = await cloud.syncWithGoogleDrive();
-                if (res.success && res.syncCount > 0) {
-                    await this.initAsync();
-                }
-            }, 1500); // 1.5 saniye sonra eşitle
+        // UI İndikatörü Oluştur (Görsel Deneyim)
+        const createSyncIndicator = () => {
+            let el = document.getElementById('syncIndicator');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'syncIndicator';
+                el.style.cssText = `
+                    position: fixed; top: 20px; right: 20px; z-index: 9999;
+                    background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(10px);
+                    padding: 8px 16px; border-radius: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+                    display: none; align-items: center; gap: 10px; font-size: 13px; font-weight: 500;
+                    border: 1px solid rgba(255,255,255,0.3); transition: all 0.3s ease;
+                `;
+                el.innerHTML = `
+                    <div class="sync-spinner" style="width: 14px; height: 14px; border: 2px solid #4a90e2; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+                    <span class="sync-text">Bulutla Eşitleniyor...</span>
+                `;
+                document.body.appendChild(el);
+            }
+            return el;
         };
 
-        window.fileSystemManager.onRemove = () => {
-            if (syncTimer) clearTimeout(syncTimer);
-            syncTimer = setTimeout(async () => {
-                console.log('[AutoSync] Silme algılandı, bulut güncelleniyor...');
-                const res = await cloud.syncWithGoogleDrive();
-                if (res.success && res.syncCount > 0) {
-                    await this.initAsync();
-                }
-            }, 1500);
+        const showSync = (text = 'Bulutla Eşitleniyor...') => {
+            const el = createSyncIndicator();
+            el.querySelector('.sync-text').textContent = text;
+            el.style.display = 'flex';
+            el.style.opacity = '1';
+            el.style.transform = 'translateY(0)';
         };
 
-        // 2. Auto-Pull (Polling)
-        // Her 60 saniyede bir bulutta yeni bir şey var mı kontrol et
+        const hideSync = () => {
+            const el = document.getElementById('syncIndicator');
+            if (el) {
+                el.style.opacity = '0';
+                el.style.transform = 'translateY(-10px)';
+                setTimeout(() => { el.style.display = 'none'; }, 300);
+            }
+        };
+
+        const triggerSync = (targetId = null) => {
+            if (syncTimer) clearTimeout(syncTimer);
+            syncTimer = setTimeout(async () => {
+                showSync();
+                const res = await cloud.syncWithGoogleDrive(targetId);
+                if (res.success && (res.syncCount > 0 || res.delta)) {
+                    await this.initAsync();
+                }
+                hideSync();
+            }, 3000); // 3 saniye debounce
+        };
+
+        // 1. Auto-Push (Debounced Delta Sync)
+        window.fileSystemManager.onSave = (key) => {
+            const boardId = key.startsWith('wb_content_') ? key.replace('wb_content_', '') : null;
+            triggerSync(boardId || key); 
+        };
+
+        window.fileSystemManager.onRemove = (key) => {
+            const id = key.startsWith('wb_content_') ? key.replace('wb_content_', '') : key;
+            triggerSync(id);
+        };
+
+        // 2. Connectivity Support (Offline Queue)
+        window.addEventListener('online', () => {
+            console.log('[AutoSync] İnternet geri geldi, bekleyen işlemler işleniyor...');
+            cloud.processPendingQueue();
+        });
+
+        // 3. Auto-Pull (Full Sync Polling)
         setInterval(async () => {
-            // Sadece kullanıcı aktifse veya dashboard açıksa kontrol et
-            if (document.visibilityState === 'visible') {
-                console.log('[AutoSync] Bulut kontrol ediliyor...');
-                const res = await cloud.syncWithGoogleDrive(); // Bu metod hem download hem upload yapar
+            if (document.visibilityState === 'visible' && navigator.onLine) {
+                console.log('[AutoSync] Periyodik kontrol...');
+                const res = await cloud.syncWithGoogleDrive();
                 if (res.success && res.syncCount > 0) {
-                    console.log('[AutoSync] Yeni veriler indirildi, arayüz tazeleniyor...');
-                    // Eğer yeni bir şey indirilmişse arayüzü tazele
                     await this.initAsync();
                 }
             }
-        }, 60000); 
+        }, 120000); // 2 dakikada bir full kontrol
     }
 }
