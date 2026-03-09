@@ -74,11 +74,26 @@ class TomFileManager {
             });
         }
 
+        // PDF verisi varsa ekle
+        let pdfData = null;
+        if (this.app.pdfManager && this.app.pdfManager.isLoaded) {
+            try {
+                const boardId = dashboard.currentBoardId;
+                const pdfBlob = await Utils.db.get(boardId);
+                if (pdfBlob) {
+                    pdfData = await this._blobToBase64(pdfBlob);
+                }
+            } catch (e) {
+                console.warn('[TomFileManager] PDF verisi alınamadı:', e);
+            }
+        }
+
         const content = {
             version: '2.1',
             format: 'tom',
             savedAt: new Date().toISOString(),
             appVersion: 'Tomar',
+            pdfData: pdfData,
             pages: pages,
             objects: pages ? null : (this.app.state.objects || []).map(obj => this._serializeObject(obj))
         };
@@ -230,6 +245,17 @@ class TomFileManager {
             };
 
             await dashboard.saveDataAsync(`wb_content_${board.id}`, contentToSave);
+
+            // PDF verisi varsa DB'ye kaydet
+            if (content.pdfData) {
+                try {
+                    const pdfBlob = await this._base64ToBlob(content.pdfData, 'application/pdf');
+                    await Utils.db.save(board.id, pdfBlob);
+                    console.log('[TomFileManager] PDF verisi DB\'ye geri yüklendi.');
+                } catch (e) {
+                    console.error('[TomFileManager] PDF geri yükleme hatası:', e);
+                }
+            }
 
             // Dashboard → App geçişi
             dashboard.container.style.display = 'none';
@@ -506,6 +532,26 @@ class TomFileManager {
             };
             img.src = dataUrl;
         });
+    }
+
+    /**
+     * Blob → Base64 (Promise)
+     */
+    _blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    /**
+     * Base64 → Blob (Promise)
+     */
+    async _base64ToBlob(base64Data, contentType) {
+        const response = await fetch(base64Data);
+        return await response.blob();
     }
 
     // ─────────────────────────────────────────────

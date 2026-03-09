@@ -193,7 +193,7 @@ class Dashboard {
                 if ((e.ctrlKey || e.metaKey) && e.key === 's') {
                     e.preventDefault();
                     if (this.currentBoardId) {
-                        this.saveCurrentBoard();
+                        this.saveCurrentBoard(true);
                         console.log('Saved!');
                     }
                 }
@@ -1436,81 +1436,94 @@ class Dashboard {
         this.app.render();
     }
 
-    async saveCurrentBoard() {
+    async saveCurrentBoard(immediate = false) {
         if (!this.currentBoardId) return;
 
+        const boardId = this.currentBoardId; // Capture ID to prevent race conditions
+
         // Debounce actual saving to prevent file system thrashing
-        if (this._saveTimeout) clearTimeout(this._saveTimeout);
+        if (this._saveTimeout) {
+            clearTimeout(this._saveTimeout);
+            this._saveTimeout = null;
+        }
 
-        return new Promise((resolve) => {
-            this._saveTimeout = setTimeout(async () => {
-                // 1. Sync current page state before saving everything
-                if (this.app.pageManager) {
-                    this.app.pageManager.saveCurrentPageState();
+        const executeSave = async () => {
+            // 1. Sync current page state before saving everything
+            if (this.app.pageManager) {
+                this.app.pageManager.saveCurrentPageState();
+            }
+
+            // Generate preview (thumbnail)
+            let preview = null;
+            try {
+                preview = this.app.canvas.toDataURL('image/webp', 0.5);
+            } catch (error) {
+                console.warn('Could not generate preview due to canvas tainting:', error);
+            }
+
+            // Update board meta
+            const boardIndex = this.boards.findIndex(b => b.id === boardId);
+            if (boardIndex !== -1) {
+                this.boards[boardIndex].lastModified = Date.now();
+                if (preview) {
+                    this.boards[boardIndex].preview = preview;
                 }
+                this.boards[boardIndex].objectCount = this.app.state.objects.length;
+                await this.saveDataAsync('wb_boards', this.boards);
+            }
 
-                // Generate preview (thumbnail)
-                let preview = null;
-                try {
-                    preview = this.app.canvas.toDataURL('image/webp', 0.5);
-                } catch (error) {
-                    console.warn('Could not generate preview due to canvas tainting:', error);
-                }
+            // Save content
+            if (this.app.pageManager) this.app.pageManager.saveCurrentPageState();
 
-                // Update board meta
-                const boardIndex = this.boards.findIndex(b => b.id === this.currentBoardId);
-                if (boardIndex !== -1) {
-                    this.boards[boardIndex].lastModified = Date.now();
-                    if (preview) {
-                        this.boards[boardIndex].preview = preview;
-                    }
-                    this.boards[boardIndex].objectCount = this.app.state.objects.length;
-                    await this.saveDataAsync('wb_boards', this.boards);
-                }
+            const optimizedPages = this.app.pageManager ? this.app.pageManager.pages.map(page => {
+                const optimizedPage = Utils.deepClone(page);
+                delete optimizedPage.thumbnail; // Clear huge base64 to save MBs
 
-                // Save content
-                if (this.app.pageManager) this.app.pageManager.saveCurrentPageState();
+                optimizedPage.objects = optimizedPage.objects.map(obj => {
+                    // Round basic props
+                    if (obj.x !== undefined) obj.x = Math.round(obj.x * 10) / 10;
+                    if (obj.y !== undefined) obj.y = Math.round(obj.y * 10) / 10;
 
-                const optimizedPages = this.app.pageManager ? this.app.pageManager.pages.map(page => {
-                    const optimizedPage = Utils.deepClone(page);
-                    delete optimizedPage.thumbnail; // Clear huge base64 to save MBs
-
-                    optimizedPage.objects = optimizedPage.objects.map(obj => {
-                        // Round basic props
-                        if (obj.x !== undefined) obj.x = Math.round(obj.x * 10) / 10;
-                        if (obj.y !== undefined) obj.y = Math.round(obj.y * 10) / 10;
-
-                        // FLATTEN: [{x,y,p},...] -> [x,y,p, x,y,p,...]
-                        if (obj.points && Array.isArray(obj.points) && !obj._flat) {
-                            const simplified = Utils.simplifyPoints(obj.points, 0.5);
-                            const flat = [];
-                            for (const p of simplified) {
-                                flat.push(Math.round(p.x * 10) / 10);
-                                flat.push(Math.round(p.y * 10) / 10);
-                                flat.push(p.pressure ? (Math.round(p.pressure * 10) / 10) : 0.5);
-                            }
-                            obj.points = flat;
-                            obj._flat = true; // Mark as optimized
+                    // FLATTEN: [{x,y,p},...] -> [x,y,p, x,y,p,...]
+                    if (obj.points && Array.isArray(obj.points) && !obj._flat) {
+                        const simplified = Utils.simplifyPoints(obj.points, 0.5);
+                        const flat = [];
+                        for (const p of simplified) {
+                            flat.push(Math.round(p.x * 10) / 10);
+                            flat.push(Math.round(p.y * 10) / 10);
+                            flat.push(p.pressure ? (Math.round(p.pressure * 10) / 10) : 0.5);
                         }
-                        return obj;
-                    });
-                    return optimizedPage;
-                }) : null;
+                        obj.points = flat;
+                        obj._flat = true; // Mark as optimized
+                    }
+                    return obj;
+                });
+                return optimizedPage;
+            }) : null;
 
-                const content = {
-                    version: "2.0",
-                    pages: optimizedPages,
-                    objects: optimizedPages ? null : Utils.deepClone(this.app.state.objects)
-                };
+            const content = {
+                version: "2.0",
+                pages: optimizedPages,
+                objects: optimizedPages ? null : Utils.deepClone(this.app.state.objects)
+            };
 
-                await this.saveDataAsync(`wb_content_${this.currentBoardId}`, content);
-                resolve();
-            }, 500); // 500ms debounce
-        });
+            await this.saveDataAsync(`wb_content_${boardId}`, content);
+        };
+
+        if (immediate) {
+            return await executeSave();
+        } else {
+            return new Promise((resolve) => {
+                this._saveTimeout = setTimeout(async () => {
+                    await executeSave();
+                    resolve();
+                }, 1000); // 1s debounce for background saves
+            });
+        }
     }
 
     async showDashboard() {
-        this.saveCurrentBoard();
+        await this.saveCurrentBoard(true);
 
         // Keep tabs open when returning to dashboard
         // Users can close tabs manually if needed
@@ -1660,8 +1673,8 @@ class Dashboard {
             logo.onclick = async () => await this.showDashboard();
         }
 
-        const handleSave = () => {
-            this.saveCurrentBoard();
+        const handleSave = async () => {
+            await this.saveCurrentBoard(true);
             alert('Beyaz tahta kaydedildi!');
             const dropdown = document.getElementById('appMenuDropdown');
             if (dropdown) dropdown.classList.remove('show');
