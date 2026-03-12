@@ -263,11 +263,36 @@ class FileSystemManager {
         try {
             if (key.startsWith('wb_content_')) {
                 await this._saveBoardToNative(key, value);
+            } else if (key === 'wb_folders') {
+                // Önce meta veriyi kaydet
+                await this._saveMetaToNative(key, value);
+                // Sonra klasör yapısını fiziksel olarak yansıt (boş klasörler dahil)
+                await this._syncFoldersToNative();
             } else {
                 await this._saveMetaToNative(key, value);
             }
         } catch (e) {
             console.warn('[FileSystemManager] Yerel kayıt başarısız:', key, e.message);
+        }
+    }
+
+    /**
+     * Uygulamadaki tüm klasör yapısını yerel dosya sisteminde yansıt (fiziksel klasörleri oluştur).
+     */
+    async _syncFoldersToNative() {
+        if (!this.dirHandle || !this._folders) return;
+        
+        console.log('[FileSystemManager] Klasör yapısı yerel diskte güncelleniyor...');
+        for (const folder of this._folders) {
+            try {
+                const pathSegments = this._getFolderPath(folder.id);
+                let currentDir = this.dirHandle;
+                for (const segment of pathSegments) {
+                    currentDir = await currentDir.getDirectoryHandle(segment, { create: true });
+                }
+            } catch (e) {
+                console.warn('[FileSystemManager] Klasör oluşturma hatası:', folder.name, e);
+            }
         }
     }
 

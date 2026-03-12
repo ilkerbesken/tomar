@@ -724,6 +724,63 @@ class CloudStorageManager {
         await this._uploadRawToDrive(fileName, jsonBytes, 'application/json', settingsFolderId, existing?.id);
     }
 
+    /**
+     * Bir board veya klasörü Drive'dan anında çöpe at.
+     * appProperties.boardId veya appProperties.folderId alanına göre dosyayı bulur.
+     * @param {string[]} ids - Silinecek board/klasör ID listesi
+     */
+    async deleteFromDrive(ids = []) {
+        if (!ids || ids.length === 0) return;
+        try {
+            await this._ensureToken();
+        } catch (e) {
+            // Token yoksa veya kullanıcı giriş yapmamışsa sessizce geç
+            console.warn('[CloudSync] Drive silme: token alınamadı, atlanıyor.');
+            return;
+        }
+
+        const headers = { Authorization: `Bearer ${this.gdriveToken}` };
+        const idSet = new Set(ids);
+
+        try {
+            // 1. appProperties'e göre dosyaları bul (sadece uygulamamızın dosyaları)
+            let pageToken = null;
+            do {
+                const params = new URLSearchParams({
+                    q: 'trashed=false',
+                    fields: 'files(id,name,appProperties),nextPageToken',
+                    pageSize: '1000'
+                });
+                if (pageToken) params.set('pageToken', pageToken);
+
+                const res = await fetch(
+                    `https://www.googleapis.com/drive/v3/files?${params}`,
+                    { headers }
+                );
+                if (!res.ok) break;
+                const data = await res.json();
+                pageToken = data.nextPageToken;
+
+                for (const file of (data.files || [])) {
+                    const boardId = file.appProperties?.boardId;
+                    const folderId = file.appProperties?.folderId;
+                    const shouldTrash = (boardId && idSet.has(boardId)) || (folderId && idSet.has(folderId));
+
+                    if (shouldTrash) {
+                        console.log(`[CloudSync] Drive'dan çöpe atılıyor: ${file.name} (${boardId || folderId})`);
+                        await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}`, {
+                            method: 'PATCH',
+                            headers: { ...headers, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ trashed: true })
+                        }).catch(e => console.warn(`[CloudSync] Çöpe atma hatası (${file.name}):`, e));
+                    }
+                }
+            } while (pageToken);
+        } catch (e) {
+            console.warn('[CloudSync] deleteFromDrive hatası:', e);
+        }
+    }
+
     // ─── Drive Dosya İşlemleri (Düşük Seviye) ────────────────────
 
     /**

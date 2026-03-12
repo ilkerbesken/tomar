@@ -99,6 +99,25 @@ class Dashboard {
         this.saveDataAsync(key, value);
     }
 
+    getCloudSync() {
+        if (!this._cloudStorage && window.CloudStorageManager) {
+            this._cloudStorage = new window.CloudStorageManager(this.app);
+        }
+        return this._cloudStorage;
+    }
+
+    async _syncDeletionToDrive(ids) {
+        if (!ids || ids.length === 0) return;
+        const list = Array.isArray(ids) ? ids : [ids];
+        if (localStorage.getItem('tomar_gdrive_token')) {
+            const cloud = this.getCloudSync();
+            if (cloud) {
+                await cloud.deleteFromDrive(list);
+            }
+        }
+    }
+
+
     init() {
         // Storage Permission Alert handling
         const banner = document.getElementById('storageAlertBanner');
@@ -1164,6 +1183,9 @@ class Dashboard {
         this.folders = this.folders.filter(f => !idsToDelete.includes(f.id));
         await this.saveDataAsync('wb_folders', this.folders);
 
+        // Drive'dan anında sil (trash'e at)
+        this._syncDeletionToDrive([...idsToDelete, ...boardsInFolders.map(b => b.id)]);
+
         // Senkronizasyon için silindiğini işaretle (Klasörler + Boardlar)
         const deletedIds = await this.loadDataAsync('wb_deleted_ids', []);
         let changed = false;
@@ -1546,6 +1568,8 @@ class Dashboard {
                 if (!deletedIds.includes(id)) {
                     deletedIds.push(id);
                     await this.saveDataAsync('wb_deleted_ids', deletedIds);
+                    // Drive'dan anında sil (trash'e at)
+                    this._syncDeletionToDrive([id]);
                 }
             } else {
                 // Soft delete (çöp kutusuna taşı)
@@ -1579,6 +1603,9 @@ class Dashboard {
             const idsToRemove = trashedBoards.map(b => b.id);
             this.boards = this.boards.filter(b => !b.deleted);
             await this.saveDataAsync('wb_boards', this.boards);
+
+            // Drive'dan anında sil (trash'e at)
+            this._syncDeletionToDrive(idsToRemove);
 
             // Senkronizasyon için silindiğini işaretle
             const deletedIds = await this.loadDataAsync('wb_deleted_ids', []);
@@ -2611,7 +2638,7 @@ class Dashboard {
         if (!localStorage.getItem('tomar_gdrive_token')) return;
 
         let syncTimer = null;
-        const cloud = new CloudStorageManager(this.app);
+        const cloud = this.getCloudSync();
 
         // UI İndikatörü Oluştur (Görsel Deneyim)
         const createSyncIndicator = () => {
