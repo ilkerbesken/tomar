@@ -74,21 +74,37 @@ class TomFileManager {
             });
         }
 
+        // PDF binary verisini base64 olarak ekle
+        let pdfBase64 = null;
+        const boardId = dashboard.currentBoardId;
+        if (boardId) {
+            try {
+                const pdfBlob = await Utils.db.get(boardId);
+                if (pdfBlob instanceof Blob) {
+                    pdfBase64 = await this._blobToBase64(pdfBlob);
+                    console.log('[TomFileManager] PDF verisi .tom dosyasına eklendi.');
+                }
+            } catch (e) {
+                console.warn('[TomFileManager] PDF verisi alınamadı:', e);
+            }
+        }
+
         const content = {
             version: '2.1',
             format: 'tom',
             savedAt: new Date().toISOString(),
             appVersion: 'Tomar',
             pages: pages,
-            objects: pages ? null : (this.app.state.objects || []).map(obj => this._serializeObject(obj))
+            objects: pages ? null : (this.app.state.objects || []).map(obj => this._serializeObject(obj)),
+            pdfBase64: pdfBase64 || undefined
         };
 
         const jsonStr = JSON.stringify(content);
         const compressed = pako.gzip(jsonStr);
 
         // Dosya adı
-        const boardName = dashboard.currentBoardId
-            ? (dashboard.boards.find(b => b.id === dashboard.currentBoardId)?.name || 'tomar')
+        const boardName = boardId
+            ? (dashboard.boards.find(b => b.id === boardId)?.name || 'tomar')
             : 'tomar';
         const safeName = boardName.replace(/[^a-zA-Z0-9ğüşıöçĞÜŞİÖÇ\s\-_]/g, '').trim() || 'tomar';
 
@@ -119,6 +135,69 @@ class TomFileManager {
         link.click();
         URL.revokeObjectURL(link.href);
         this._showToast('✅ .tom dosyası indirildi!');
+    }
+
+    /**
+     * Bir template'i .tom dosyası olarak dışa aktar
+     * @param {Object} template - TemplateManager'dan gelen template nesnesi
+     */
+    async saveTemplateAsTom(template) {
+        await this._waitForPako();
+
+        if (!template || !template.objects) {
+            alert('Geçerli bir şablon bulunamadı.');
+            return;
+        }
+
+        // Template nesnelerini serializeEt
+        const serializedObjects = template.objects.map(obj => this._serializeObject(obj));
+
+        const content = {
+            version: '2.1',
+            format: 'tom',
+            savedAt: new Date().toISOString(),
+            appVersion: 'Tomar',
+            templateId: template.id,
+            templateName: template.name,
+            pages: [{
+                id: Date.now(),
+                name: 'Sayfa 1',
+                objects: serializedObjects,
+                backgroundColor: 'white',
+                backgroundPattern: 'none',
+                thumbnail: null
+            }],
+            objects: null
+        };
+
+        const jsonStr = JSON.stringify(content);
+        const compressed = pako.gzip(jsonStr);
+        const safeName = (template.name || 'sablon').replace(/[^a-zA-Z0-9ğüşıöçĞÜŞİÖÇ\s\-_]/g, '').trim() || 'sablon';
+
+        if (window.showSaveFilePicker) {
+            try {
+                const fileHandle = await window.showSaveFilePicker({
+                    suggestedName: `${safeName}.tom`,
+                    types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/octet-stream': ['.tom'] } }]
+                });
+                const writable = await fileHandle.createWritable();
+                await writable.write(compressed);
+                await writable.close();
+                this._showToast(`✅ "${template.name}" şablonu .tom olarak kaydedildi!`);
+                return;
+            } catch (e) {
+                if (e.name === 'AbortError') return;
+                console.warn('[TomFileManager] showSaveFilePicker başarısız, fallback kullanılıyor:', e);
+            }
+        }
+
+        const blob = new Blob([compressed], { type: 'application/octet-stream' });
+        const link = document.createElement('a');
+        link.download = `${safeName}.tom`;
+        link.href = URL.createObjectURL(blob);
+        link.click();
+        URL.revokeObjectURL(link.href);
+        this._showToast(`✅ "${template.name}" şablonu .tom olarak indirildi!`);
     }
 
     // ─────────────────────────────────────────────
@@ -208,20 +287,33 @@ class TomFileManager {
             if (!dashboard) return;
 
             const boardName = file.name.replace(/\.tom$/i, '') || 'İçe Aktarılan Not';
+            const hasPDF = !!content.pdfBase64;
             const board = {
                 id: 'tom_' + Date.now(),
                 name: boardName,
                 createdAt: Date.now(),
                 lastModified: Date.now(),
-                coverBg: '#1971c2',
+                coverBg: hasPDF ? '#fa5252' : '#1971c2',
                 coverTexture: 'dots',
                 folderId: null,
                 deleted: false,
-                isTomFile: true
+                isTomFile: true,
+                isPDF: hasPDF
             };
 
             dashboard.boards.push(board);
             await dashboard.saveDataAsync('wb_boards', dashboard.boards);
+
+            // PDF base64 verisi varsa IndexedDB'ye kaydet
+            if (hasPDF) {
+                try {
+                    const pdfBlob = await this._base64ToBlob(content.pdfBase64, 'application/pdf');
+                    await Utils.db.save(board.id, pdfBlob);
+                    console.log('[TomFileManager] PDF verisi geri yüklendi.');
+                } catch (e) {
+                    console.warn('[TomFileManager] PDF verisi geri yüklenemedi:', e);
+                }
+            }
 
             const contentToSave = {
                 version: content.version || '2.1',
@@ -506,6 +598,32 @@ class TomFileManager {
             };
             img.src = dataUrl;
         });
+    }
+
+    /**
+     * Blob → base64 data URL (Promise)
+     */
+    _blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    /**
+     * base64 data URL → Blob
+     */
+    async _base64ToBlob(dataUrl, mimeType) {
+        // dataUrl may start with 'data:application/pdf;base64,...'
+        const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        const binaryStr = atob(base64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+        }
+        return new Blob([bytes], { type: mimeType || 'application/pdf' });
     }
 
     // ─────────────────────────────────────────────

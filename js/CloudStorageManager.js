@@ -545,8 +545,8 @@ class CloudStorageManager {
         const safeName = this._sanitizeName(board.name) || board.id;
         const fileName = board.isPDF ? `${safeName}.pdf.tom` : `${safeName}.tom`;
 
-        // .tom formatında sıkıştır (pako/gzip)
-        const tomBytes = await this._contentToTom(content);
+        // .tom formatında sıkıştır (pako/gzip) - PDF verisi dahil
+        const tomBytes = await this._contentToTom(content, board.id);
 
         const appProperties = { boardId: board.id, type: 'board' };
         return await this._uploadRawToDrive(fileName, tomBytes, 'application/octet-stream', targetFolderId, existingFileId, appProperties);
@@ -581,8 +581,10 @@ class CloudStorageManager {
 
     /**
      * Board içeriğini .tom (gzip) byte dizisine dönüştür.
+     * TomFileManager._serializeObject kullanarak canvas/tape/image gibi
+     * nesneleri doğru şekilde serialize eder.
      */
-    async _contentToTom(content) {
+    async _contentToTom(content, boardId = null) {
         // pako beklenmiyorsa yükle
         if (typeof pako === 'undefined') {
             await new Promise((resolve, reject) => {
@@ -594,12 +596,43 @@ class CloudStorageManager {
             });
         }
 
+        // TomFileManager._serializeObject'i kullan (canvas/tape/image serialization için)
+        const tomFileManager = this.app?.tomFileManager;
+        const serializeObj = tomFileManager
+            ? (obj) => tomFileManager._serializeObject(obj)
+            : (obj) => obj;
+
+        // Sayfaları serialize et
+        let serializedPages = null;
+        if (content.pages) {
+            serializedPages = content.pages.map(page => {
+                const p = Object.assign({}, page);
+                delete p.thumbnail;
+                p.objects = (p.objects || []).map(obj => serializeObj(obj));
+                return p;
+            });
+        }
+
+        // PDF binary verisini ekle (eğer board PDF ise)
+        let pdfBase64 = null;
+        if (boardId) {
+            try {
+                const pdfBlob = await Utils.db.get(boardId);
+                if (pdfBlob instanceof Blob && tomFileManager) {
+                    pdfBase64 = await tomFileManager._blobToBase64(pdfBlob);
+                }
+            } catch (e) {
+                console.warn('[CloudSync] PDF verisi alınamadı:', e);
+            }
+        }
+
         const jsonStr = JSON.stringify({
             version: content.version || '2.1',
             format: 'tom',
             savedAt: new Date().toISOString(),
-            pages: content.pages || null,
-            objects: content.objects || null
+            pages: serializedPages,
+            objects: serializedPages ? null : (content.objects || null),
+            pdfBase64: pdfBase64 || undefined
         });
 
         return pako.gzip(jsonStr);
@@ -645,7 +678,23 @@ class CloudStorageManager {
                 jsonStr = new TextDecoder().decode(uint8);
             }
 
-            return JSON.parse(jsonStr);
+            const parsed = JSON.parse(jsonStr);
+
+            // PDF base64 verisi varsa IndexedDB'ye geri yaz
+            if (parsed.pdfBase64 && boardMeta.id) {
+                try {
+                    const tomFileManager = this.app?.tomFileManager;
+                    if (tomFileManager) {
+                        const pdfBlob = await tomFileManager._base64ToBlob(parsed.pdfBase64, 'application/pdf');
+                        await Utils.db.save(boardMeta.id, pdfBlob);
+                        console.log(`[CloudSync] PDF verisi geri yüklendi: ${boardMeta.name}`);
+                    }
+                } catch (e) {
+                    console.warn('[CloudSync] PDF geri yükleme hatası:', e);
+                }
+            }
+
+            return parsed;
         } catch (e) {
             console.warn('[CloudSync] .tom indirme hatası:', e);
             return null;

@@ -349,6 +349,53 @@
     height: 14px;
 }
 
+/* .tom Download Button */
+.template-tom-btn {
+    position: absolute;
+    top: 40px;
+    left: 6px;
+    width: 28px;
+    height: 28px;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    z-index: 10;
+    color: #666;
+    opacity: 0;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.template-card:hover .template-tom-btn {
+    opacity: 1;
+}
+
+.template-tom-btn:hover {
+    background: #1971c2;
+    color: white;
+    transform: scale(1.1);
+}
+
+.template-tom-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* Mobile: show tom btn always visible */
+@media (max-width: 768px) {
+    .template-tom-btn {
+        opacity: 1 !important;
+        width: 24px;
+        height: 24px;
+        top: 36px;
+    }
+}
+
 /* Empty State */
 .template-empty-state {
     grid-column: 1 / -1;

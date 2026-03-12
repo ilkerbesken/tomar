@@ -1379,10 +1379,12 @@ class Dashboard {
             let pages = savedData.pages;
             const objects = savedData.objects;
 
-            // INFLATE: Convert [x,y,p,...] back to [{x,y,p},...]
-            const inflateObjects = (objs) => {
-                if (!objs) return [];
-                return objs.map(obj => {
+            // TomFileManager._deserializeObject kullan (tape mask, image, table gibi nesneleri restore eder)
+            const tomFM = this.app.tomFileManager;
+            const deserializeObj = tomFM
+                ? (obj) => tomFM._deserializeObject(obj)
+                : (obj) => {
+                    // Fallback: sadece flat points inflate et
                     if (obj._flat && Array.isArray(obj.points)) {
                         const inflated = [];
                         for (let i = 0; i < obj.points.length; i += 3) {
@@ -1395,12 +1397,14 @@ class Dashboard {
                         obj.points = inflated;
                         delete obj._flat;
                     }
-                    return obj;
-                });
-            };
+                    return Promise.resolve(obj);
+                };
 
             if (pages) {
-                pages.forEach(p => p.objects = inflateObjects(p.objects));
+                pages = await Promise.all(pages.map(async page => {
+                    page.objects = await Promise.all((page.objects || []).map(obj => deserializeObj(obj)));
+                    return page;
+                }));
                 if (this.app.pageManager) {
                     this.app.pageManager.pages = pages;
                     this.app.pageManager.renderPageList();
@@ -1409,7 +1413,7 @@ class Dashboard {
                     setTimeout(() => this.app.pageManager.updateCurrentPageThumbnail(), 500);
                 }
             } else {
-                this.app.state.objects = inflateObjects(objects);
+                this.app.state.objects = await Promise.all((objects || []).map(obj => deserializeObj(obj)));
             }
         } else {
             // New board or no saved content
@@ -1468,39 +1472,43 @@ class Dashboard {
                     await this.saveDataAsync('wb_boards', this.boards);
                 }
 
-                // Save content
+                // Save content — TomFileManager._serializeObject kullanarak
+                // tape/canvas/image gibi DOM objelerini doğru serialize eder
                 if (this.app.pageManager) this.app.pageManager.saveCurrentPageState();
 
-                const optimizedPages = this.app.pageManager ? this.app.pageManager.pages.map(page => {
-                    const optimizedPage = Utils.deepClone(page);
-                    delete optimizedPage.thumbnail; // Clear huge base64 to save MBs
-
-                    optimizedPage.objects = optimizedPage.objects.map(obj => {
-                        // Round basic props
-                        if (obj.x !== undefined) obj.x = Math.round(obj.x * 10) / 10;
-                        if (obj.y !== undefined) obj.y = Math.round(obj.y * 10) / 10;
-
-                        // FLATTEN: [{x,y,p},...] -> [x,y,p, x,y,p,...]
-                        if (obj.points && Array.isArray(obj.points) && !obj._flat) {
-                            const simplified = Utils.simplifyPoints(obj.points, 0.5);
+                // Serializer: TomFileManager varsa kullan, yoksa basit deep clone
+                const tomFM = this.app.tomFileManager;
+                const serializeObj = tomFM
+                    ? (obj) => tomFM._serializeObject(obj)
+                    : (obj) => {
+                        const o = Object.assign({}, obj);
+                        if (o.x !== undefined) o.x = Math.round(o.x * 10) / 10;
+                        if (o.y !== undefined) o.y = Math.round(o.y * 10) / 10;
+                        if (o.points && Array.isArray(o.points) && !o._flat) {
+                            const simplified = Utils.simplifyPoints(o.points, 0.5);
                             const flat = [];
                             for (const p of simplified) {
                                 flat.push(Math.round(p.x * 10) / 10);
                                 flat.push(Math.round(p.y * 10) / 10);
                                 flat.push(p.pressure ? (Math.round(p.pressure * 10) / 10) : 0.5);
                             }
-                            obj.points = flat;
-                            obj._flat = true; // Mark as optimized
+                            o.points = flat;
+                            o._flat = true;
                         }
-                        return obj;
-                    });
+                        return o;
+                    };
+
+                const optimizedPages = this.app.pageManager ? this.app.pageManager.pages.map(page => {
+                    const optimizedPage = Object.assign({}, page);
+                    delete optimizedPage.thumbnail; // Clear huge base64 to save MBs
+                    optimizedPage.objects = (page.objects || []).map(obj => serializeObj(obj));
                     return optimizedPage;
                 }) : null;
 
                 const content = {
-                    version: "2.0",
+                    version: "2.1",
                     pages: optimizedPages,
-                    objects: optimizedPages ? null : Utils.deepClone(this.app.state.objects)
+                    objects: optimizedPages ? null : (this.app.state.objects || []).map(obj => serializeObj(obj))
                 };
 
                 await this.saveDataAsync(`wb_content_${this.currentBoardId}`, content);
@@ -2224,6 +2232,11 @@ class Dashboard {
                         <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
                     </svg>
                 </button>
+                <button class="template-tom-btn" data-template-id="${template.id}" title=".tom olarak kaydet">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                    </svg>
+                </button>
                 ${isUserTemplate ? `
                 <button class="template-delete-btn" data-template-id="${template.id}" title="Şablonu Sil">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2240,7 +2253,7 @@ class Dashboard {
 
             // Apply template on click
             card.onclick = (e) => {
-                if (e.target.closest('.template-favorite-btn') || e.target.closest('.template-delete-btn')) return;
+                if (e.target.closest('.template-favorite-btn') || e.target.closest('.template-delete-btn') || e.target.closest('.template-tom-btn')) return;
                 this.applyTemplateAndCreateBoard(template.id);
             };
 
@@ -2251,6 +2264,17 @@ class Dashboard {
                 this.app.templateManager.toggleFavorite(template.id);
                 this.renderTemplateGallery(category, searchQuery);
             };
+
+            // .tom olarak kaydet
+            const tomBtn = card.querySelector('.template-tom-btn');
+            if (tomBtn) {
+                tomBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    if (this.app.tomFileManager) {
+                        this.app.tomFileManager.saveTemplateAsTom(template);
+                    }
+                };
+            }
 
             // Delete button (for user templates) - WITH CONFIRMATION
             const deleteBtn = card.querySelector('.template-delete-btn');
@@ -2642,13 +2666,26 @@ class Dashboard {
 
         // 1. Auto-Push (Debounced Delta Sync)
         window.fileSystemManager.onSave = (key) => {
-            const boardId = key.startsWith('wb_content_') ? key.replace('wb_content_', '') : null;
-            triggerSync(boardId || key); 
+            if (key.startsWith('wb_content_')) {
+                // Board içeriği değişti: delta sync ile sadece bu board'u yükle
+                const boardId = key.replace('wb_content_', '');
+                if (boardId && boardId !== 'null' && boardId !== 'undefined') {
+                    triggerSync(boardId);
+                }
+            } else if (key === 'wb_boards' || key === 'wb_folders') {
+                // Klasör/board listesi değişti: manifest güncelle (full sync ama sessizce)
+                triggerSync(null);
+            }
+            // wb_deleted_ids, wb_view_settings gibi diğer key'ler için sync tetiklemiyoruz
         };
 
         window.fileSystemManager.onRemove = (key) => {
-            const id = key.startsWith('wb_content_') ? key.replace('wb_content_', '') : key;
-            triggerSync(id);
+            const id = key.startsWith('wb_content_') ? key.replace('wb_content_', '') : null;
+            if (id && id !== 'null' && id !== 'undefined') {
+                triggerSync(id);
+            } else {
+                triggerSync(null);
+            }
         };
 
         // 2. Connectivity Support (Offline Queue)
