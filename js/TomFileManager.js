@@ -295,7 +295,7 @@ class TomFileManager {
                 lastModified: Date.now(),
                 coverBg: hasPDF ? '#fa5252' : '#1971c2',
                 coverTexture: 'dots',
-                folderId: null,
+                folderId: (dashboard.currentView && dashboard.currentView.startsWith('f_')) ? dashboard.currentView : null,
                 deleted: false,
                 isTomFile: true,
                 isPDF: hasPDF
@@ -322,6 +322,11 @@ class TomFileManager {
             };
 
             await dashboard.saveDataAsync(`wb_content_${board.id}`, contentToSave);
+            
+            // Sync metadata'yı güncelle (Drive PUSH'u tetiklemek için)
+            if (window.fileSystemManager) {
+                await window.fileSystemManager.updateSyncMetadata(board.id);
+            }
 
             // Dashboard → App geçişi
             dashboard.container.style.display = 'none';

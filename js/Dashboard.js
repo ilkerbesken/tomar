@@ -1330,6 +1330,9 @@ class Dashboard {
 
             this.boards.push(newBoard);
             await this.saveDataAsync('wb_boards', this.boards);
+            
+            // Sync metadata'yı güncelle (Drive PUSH'u tetiklemek için)
+            await window.fileSystemManager.updateSyncMetadata(id);
 
             this.renderBoards();
             this.renderSidebar();
@@ -1641,7 +1644,11 @@ class Dashboard {
             // Eski yolu kaydet (taşıma için)
             const oldBoard = { ...board };
             board.name = newName.trim();
+            board.lastModified = Date.now();
             await this.saveDataAsync('wb_boards', this.boards);
+            
+            // Sync metadata'yı güncelle (Drive PUSH'u tetiklemek için)
+            await window.fileSystemManager.updateSyncMetadata(id);
 
             // Native klasörde dosyayı yeni isme taşı
             await window.fileSystemManager.moveBoardNativeFile(id, oldBoard);
@@ -1665,7 +1672,11 @@ class Dashboard {
         if (board) {
             const oldBoard = { ...board };
             board.folderId = folderId || null;
+            board.lastModified = Date.now();
             await this.saveDataAsync('wb_boards', this.boards);
+
+            // Sync metadata'yı güncelle (Drive PUSH'u tetiklemek için)
+            await window.fileSystemManager.updateSyncMetadata(boardId);
 
             // Native klasörde dosyayı yeni konuma taşı
             await window.fileSystemManager.moveBoardNativeFile(boardId, oldBoard);
