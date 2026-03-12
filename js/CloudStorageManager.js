@@ -418,7 +418,7 @@ class CloudStorageManager {
         const headers = { Authorization: `Bearer ${this.gdriveToken}` };
         const folderMime = 'application/vnd.google-apps.folder';
 
-        // Önce ID ile ara (eğer varsa, rename durumunu yakalamak için)
+        // ID ile ara (appProperties.folderId)
         if (appFolderId) {
             const qId = `appProperties has { key='folderId' and value='${appFolderId}' } and trashed=false`;
             const resId = await fetch('https://www.googleapis.com/drive/v3/files?' + new URLSearchParams({ q: qId, fields: 'files(id,name,parents)' }).toString(), { headers });
@@ -450,12 +450,12 @@ class CloudStorageManager {
             }
         }
 
-        // Klasik isimle arama (fallback)
+        // İsim ve Parent ile ara (fallback)
         let q = `name='${name.replace(/'/g, "\\'")}' and mimeType='${folderMime}' and trashed=false`;
         if (parentId) q += ` and '${parentId}' in parents`;
 
         const searchUrl = 'https://www.googleapis.com/drive/v3/files?' +
-            new URLSearchParams({ q, fields: 'files(id,name)' }).toString();
+            new URLSearchParams({ q, fields: 'files(id,name,appProperties)' }).toString();
 
         const searchRes = await fetch(searchUrl, { headers });
         if (!searchRes.ok) {
@@ -468,11 +468,21 @@ class CloudStorageManager {
 
         const data = await searchRes.json();
         if (data.files?.length > 0) {
-            this._folderIdCache[cacheKey] = data.files[0].id;
-            return data.files[0].id;
+            const foundFile = data.files[0];
+            // REPAIR: Eğer isimle bulunduysa ama folderId'si yoksa (eski sürümden kalma vb), ID'yi ekle
+            if (appFolderId && !foundFile.appProperties?.folderId) {
+                console.log(`[CloudSync] Klasör onarılıyor (ID eklendi): ${name}`);
+                await fetch(`https://www.googleapis.com/drive/v3/files/${foundFile.id}`, {
+                    method: 'PATCH',
+                    headers: { ...headers, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ appProperties: { folderId: appFolderId, type: 'folder' } })
+                }).catch(e => console.warn('[CloudSync] Klasör onarım hatası:', e));
+            }
+            this._folderIdCache[cacheKey] = foundFile.id;
+            return foundFile.id;
         }
 
-        // Oluştur
+        // 3. Oluştur
         const body = { 
             name, 
             mimeType: folderMime, 
@@ -558,13 +568,25 @@ class CloudStorageManager {
     async _getDriveTargetFolder(board, folders, tomarFolderId) {
         if (!board.folderId) return tomarFolderId;
 
-        // Klasör zincirini çöz
-        const folderPath = this._getFolderPathNames(board.folderId, folders);
+        // Klasör zincirini ID bazlı çöz (mükerrerliği önlemek için)
+        const folderIds = this._getFolderPathIds(board.folderId, folders);
         let currentParent = tomarFolderId;
-        for (const name of folderPath) {
-            currentParent = await this._getOrCreateDriveFolder(name, currentParent);
+        
+        for (const fId of folderIds) {
+            const folder = folders.find(f => f.id === fId);
+            if (!folder) continue;
+            
+            const name = this._sanitizeName(folder.name) || folder.id;
+            currentParent = await this._getOrCreateDriveFolder(name, currentParent, folder.id);
         }
         return currentParent;
+    }
+
+    _getFolderPathIds(folderId, folders) {
+        const folder = folders.find(f => f.id === folderId);
+        if (!folder) return [];
+        if (!folder.parentId) return [folder.id];
+        return [...this._getFolderPathIds(folder.parentId, folders), folder.id];
     }
 
     /**

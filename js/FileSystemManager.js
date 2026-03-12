@@ -61,7 +61,17 @@ class FileSystemManager {
         }
 
         this._initialized = true;
+
+        // Başlangıçta yapı cache'ini doldur (yol hesaplamaları için kritik)
+        this._boards = await this.getItem('wb_boards', []);
+        this._folders = await this.getItem('wb_folders', []);
+
         console.log(`[FileSystemManager] Başlatıldı: ${this.mode} modunda.`);
+        
+        // Eğer native moddaysak klasör yapısını fiziksel olarak oluştur
+        if (this.mode === 'native') {
+            await this._syncFoldersToNative();
+        }
 
         await this._checkInitialMigration();
     }
@@ -110,7 +120,10 @@ class FileSystemManager {
      * Bir klasörün yol segmentlerini döndür.
      * @returns {string[]} path segments
      */
-    _getFolderPath(folderId) {
+    _getFolderPath(folderId, visited = new Set()) {
+        if (visited.has(folderId)) return []; // Döngüsel referans koruması
+        visited.add(folderId);
+
         const folder = this._folders.find(f => f.id === folderId);
         if (!folder) return [];
 
@@ -120,7 +133,7 @@ class FileSystemManager {
             return [safeName];
         }
 
-        const parentPath = this._getFolderPath(folder.parentId);
+        const parentPath = this._getFolderPath(folder.parentId, visited);
         return [...parentPath, safeName];
     }
 
@@ -283,9 +296,15 @@ class FileSystemManager {
         if (!this.dirHandle || !this._folders) return;
         
         console.log('[FileSystemManager] Klasör yapısı yerel diskte güncelleniyor...');
-        for (const folder of this._folders) {
+        
+        // Derinliğe göre sırala (üstten alta doğru oluşturmak için)
+        const sortedFolders = this._sortFoldersByDepth(this._folders);
+
+        for (const folder of sortedFolders) {
             try {
                 const pathSegments = this._getFolderPath(folder.id);
+                if (pathSegments.length === 0) continue;
+
                 let currentDir = this.dirHandle;
                 for (const segment of pathSegments) {
                     currentDir = await currentDir.getDirectoryHandle(segment, { create: true });
@@ -294,6 +313,16 @@ class FileSystemManager {
                 console.warn('[FileSystemManager] Klasör oluşturma hatası:', folder.name, e);
             }
         }
+    }
+
+    _sortFoldersByDepth(folders) {
+        const getDepth = (folder, visited = new Set()) => {
+            if (!folder.parentId || visited.has(folder.id)) return 0;
+            visited.add(folder.id);
+            const parent = folders.find(f => f.id === folder.parentId);
+            return parent ? 1 + getDepth(parent, visited) : 0;
+        };
+        return [...folders].sort((a, b) => getDepth(a) - getDepth(b));
     }
 
     /**
