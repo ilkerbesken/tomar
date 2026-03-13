@@ -168,39 +168,60 @@ class Dashboard {
                 btnNewBoardMobile.onclick = () => this.createNewBoard();
             }
 
-            // PDF Upload
-            this.btnUploadPDF = document.getElementById('btnUploadPDF');
-            const btnUploadPDFMobile = document.getElementById('btnUploadPDFMobile');
+            // Import Modal handling
+            this.btnImport = document.getElementById('btnImport');
+            const btnImportMobile = document.getElementById('btnImportMobile');
+            this.importModal = document.getElementById('importModal');
+            const btnCloseImportModal = document.getElementById('btnCloseImportModal');
+            
+            const btnModalUploadPDF = document.getElementById('btnModalUploadPDF');
+            const btnModalOpenTom = document.getElementById('btnModalOpenTom');
             this.pdfInput = document.getElementById('pdfInput');
-
-            const triggerPDF = () => this.pdfInput.click();
-
-            if (this.btnUploadPDF && this.pdfInput) {
-                this.btnUploadPDF.onclick = triggerPDF;
-                this.pdfInput.onchange = (e) => this.handlePDFUpload(e);
-            }
-            if (btnUploadPDFMobile) {
-                btnUploadPDFMobile.onclick = triggerPDF;
-            }
-
-            // Tom Upload (.tom)
-            this.btnOpenTom = document.getElementById('btnOpenTom');
-            const btnOpenTomMobile = document.getElementById('btnOpenTomMobile');
             this.tomInput = document.getElementById('tomInput');
 
-            const triggerTom = () => {
-                if (this.app.tomFileManager) {
-                    this.app.tomFileManager.openTomFile();
+            const toggleImportModal = (show) => {
+                if (show) {
+                    this.importModal.classList.add('show');
                 } else {
-                    this.tomInput.click();
+                    this.importModal.classList.remove('show');
                 }
             };
 
-            if (this.btnOpenTom) {
-                this.btnOpenTom.onclick = triggerTom;
+            if (this.btnImport) {
+                this.btnImport.onclick = () => toggleImportModal(true);
             }
-            if (btnOpenTomMobile) {
-                btnOpenTomMobile.onclick = triggerTom;
+            if (btnImportMobile) {
+                btnImportMobile.onclick = () => toggleImportModal(true);
+            }
+            if (btnCloseImportModal) {
+                btnCloseImportModal.onclick = () => toggleImportModal(false);
+            }
+            
+            // Close modal when clicking outside
+            this.importModal?.addEventListener('click', (e) => {
+                if (e.target === this.importModal) toggleImportModal(false);
+            });
+
+            if (btnModalUploadPDF) {
+                btnModalUploadPDF.onclick = () => {
+                    toggleImportModal(false);
+                    this.pdfInput.click();
+                };
+            }
+
+            if (this.pdfInput) {
+                this.pdfInput.onchange = (e) => this.handlePDFUpload(e);
+            }
+
+            if (btnModalOpenTom) {
+                btnModalOpenTom.onclick = () => {
+                    toggleImportModal(false);
+                    if (this.app.tomFileManager) {
+                        this.app.tomFileManager.openTomFile();
+                    } else {
+                        this.tomInput.click();
+                    }
+                };
             }
 
             // Template Gallery

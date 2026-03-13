@@ -538,8 +538,125 @@ input[type="range"] {
 
 .modal-backdrop.show {
     display: flex !important;
-    z-index: 9999 !important;
+    z-index: 10000 !important;
     animation: fadeIn 0.2s ease-out;
+}
+
+/* Import Modal Styles */
+.import-modal {
+    background: white;
+    width: 440px;
+    max-width: 95%;
+    border-radius: 16px;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.2);
+    overflow: hidden;
+    transform: translateY(20px);
+    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    padding: 24px;
+}
+
+.modal-backdrop.show .import-modal {
+    transform: translateY(0);
+}
+
+.import-modal .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    border-bottom: none;
+    padding: 0;
+}
+
+.import-modal .modal-header h2 {
+    font-size: 20px;
+    font-weight: 700;
+    color: #1a1a1a;
+    margin: 0;
+}
+
+.import-modal .close-modal-btn {
+    background: transparent;
+    border: none;
+    font-size: 20px;
+    color: #adb5bd;
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.import-modal .close-modal-btn:hover {
+    background: #f1f3f5;
+    color: #495057;
+}
+
+.import-modal .modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.import-option-btn {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px;
+    background: white;
+    border: 1px solid #e9ecef;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    text-align: left;
+    width: 100%;
+}
+
+.import-option-btn:hover {
+    border-color: #1971c2;
+    background: #f1f8ff;
+    transform: scale(1.02);
+    box-shadow: 0 4px 12px rgba(25, 113, 194, 0.1);
+}
+
+.import-option-btn .option-icon-wrapper {
+    width: 40px;
+    height: 40px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.2s;
+}
+
+.import-option-btn:hover .option-icon-wrapper {
+    background: #e7f5ff;
+}
+
+.import-option-btn .option-icon-wrapper img {
+    width: 20px;
+    height: 20px;
+    opacity: 0.8;
+}
+
+.import-option-btn .option-content {
+    flex: 1;
+}
+
+.import-option-btn .option-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #495057;
+}
+
+.import-option-btn:hover .option-title {
+    color: #1971c2;
 }
 
 .settings-modal {
@@ -817,6 +934,17 @@ input[type="range"] {
 
 .btn-primary:hover {
     background: #1976d2;
+}
+
+.btn-secondary {
+    background: #f8f9fa;
+    color: #495057;
+    border: 1px solid #dee2e6;
+}
+
+.btn-secondary:hover {
+    background: #f1f3f5;
+    border-color: #adb5bd;
 }
 
 /* Canvas Container */
