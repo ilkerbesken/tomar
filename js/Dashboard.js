@@ -1506,15 +1506,20 @@ class Dashboard {
                 ? (obj) => tomFM._serializeObject(obj)
                 : (obj) => {
                     const o = Object.assign({}, obj);
-                    if (o.x !== undefined) o.x = Math.round(o.x * 1000) / 1000;
-                    if (o.y !== undefined) o.y = Math.round(o.y * 1000) / 1000;
+                    // Round general coordinates to high precision (5 decimals)
+                    if (o.x !== undefined) o.x = Math.round(o.x * 100000) / 100000;
+                    if (o.y !== undefined) o.y = Math.round(o.y * 100000) / 100000;
+                    if (o.width !== undefined) o.width = Math.round(o.width * 100000) / 100000;
+                    if (o.height !== undefined) o.height = Math.round(o.height * 100000) / 100000;
+
+                    // Points: Save EVERYTHING without simplification or heavy rounding
                     if (o.points && Array.isArray(o.points) && !o._flat) {
-                        const simplified = Utils.simplifyPoints(o.points, 0.05); // High precision
                         const flat = [];
-                        for (const p of simplified) {
-                            flat.push(Math.round(p.x * 1000) / 1000);
-                            flat.push(Math.round(p.y * 1000) / 1000);
-                            flat.push(p.pressure !== undefined ? (Math.round(p.pressure * 1000) / 1000) : 0.5);
+                        for (const p of o.points) {
+                            // High precision for pen strokes to maintain Chaikin smoothing
+                            flat.push(Math.round(p.x * 100000) / 100000);
+                            flat.push(Math.round(p.y * 100000) / 100000);
+                            flat.push(p.pressure !== undefined ? (Math.round(p.pressure * 100000) / 100000) : 0.5);
                         }
                         o.points = flat;
                         o._flat = true;
