@@ -183,6 +183,26 @@ class Dashboard {
                 btnUploadPDFMobile.onclick = triggerPDF;
             }
 
+            // Tom Upload (.tom)
+            this.btnOpenTom = document.getElementById('btnOpenTom');
+            const btnOpenTomMobile = document.getElementById('btnOpenTomMobile');
+            this.tomInput = document.getElementById('tomInput');
+
+            const triggerTom = () => {
+                if (this.app.tomFileManager) {
+                    this.app.tomFileManager.openTomFile();
+                } else {
+                    this.tomInput.click();
+                }
+            };
+
+            if (this.btnOpenTom) {
+                this.btnOpenTom.onclick = triggerTom;
+            }
+            if (btnOpenTomMobile) {
+                btnOpenTomMobile.onclick = triggerTom;
+            }
+
             // Template Gallery
             this.btnOpenTemplates = document.getElementById('btnOpenTemplates');
             const btnOpenTemplatesMobile = document.getElementById('btnOpenTemplatesMobile');
@@ -269,7 +289,37 @@ class Dashboard {
             console.warn('[Dashboard] Geçersiz anahtar engellendi:', key);
             return;
         }
-        await window.fileSystemManager.saveItem(key, value);
+
+        // Fast purification check for IndexedDB compatibility.
+        // Instead of full JSON stringify/parse which is slow on huge arrays,
+        // we only perform it if we suspect the data might contain "live" objects.
+        let safeValue = value;
+        const heavyKeys = ['wb_boards', 'wb_folders'];
+        const contentKey = key.startsWith('wb_content_');
+
+        if (heavyKeys.includes(key) || contentKey) {
+            // Note: The content itself is already mostly cleaned by serializeObj in saveCurrentBoard.
+            // But if we still see errors, we might need a shallow check here.
+            // For now, let's trust our improved serializeObj and only catch if put fails.
+        }
+
+        try {
+            await window.fileSystemManager.saveItem(key, safeValue);
+        } catch (error) {
+            if (error.name === 'DataCloneError') {
+                console.warn('[Dashboard] DataCloneError detected during save. Performing emergency purification for key:', key);
+                try {
+                    // Emergency slow pass only when actually needed
+                    safeValue = JSON.parse(JSON.stringify(value));
+                    await window.fileSystemManager.saveItem(key, safeValue);
+                    console.info('[Dashboard] Emergency purification successful.');
+                } catch (innerError) {
+                    console.error('[Dashboard] Emergency purification failed:', innerError);
+                }
+            } else {
+                throw error;
+            }
+        }
     }
 
     // Keep aliases for backward compatibility but make them async
@@ -1351,7 +1401,7 @@ class Dashboard {
         }
     }
 
-    async loadBoard(id) {
+    async loadBoard(id, templateId = null) {
         const board = this.boards.find(b => b.id === id);
         if (!board) return;
 
@@ -1366,14 +1416,14 @@ class Dashboard {
 
         // Use TabManager to open this board as a tab
         if (this.app.tabManager) {
-            await this.app.tabManager.openBoard(id, board.name);
+            await this.app.tabManager.openBoard(id, board.name, templateId);
         } else {
             // Fallback to old behavior if TabManager not available
             this.currentBoardId = id;
-            await this.loadBoardContent(id);
+            await this.loadBoardContent(id, templateId);
         }
 
-        // Fit to width by default as requested
+        // Fit to width by default 
         if (this.app.zoomManager) {
             setTimeout(() => {
                 this.app.zoomManager.fitToWidth(10);
@@ -1383,16 +1433,21 @@ class Dashboard {
         }
     }
 
-    async loadBoardContent(id) {
+    async loadBoardContent(id, templateId = null) {
+        console.log(`[Dashboard] Loading content for board: ${id}`);
+        
+        // Reset state
+        if (this.app.pageManager) this.app.pageManager.clear();
+        this.app.state.objects = [];
+
         // Clear previous PDF if any
-        if (this.app.pdfManager) {
-            this.app.pdfManager.clearPDF();
-        }
+        if (this.app.pdfManager) this.app.pdfManager.clearPDF();
 
         // Check if there is an associated PDF in IndexedDB
         try {
             const pdfBlob = await Utils.db.get(id);
             if (pdfBlob && this.app.pdfManager) {
+                console.log('[Dashboard] PDF found in DB, loading...');
                 const pdfUrl = URL.createObjectURL(pdfBlob);
                 await this.app.pdfManager.loadPDF(pdfUrl);
             }
@@ -1405,28 +1460,13 @@ class Dashboard {
             let pages = savedData.pages;
             const objects = savedData.objects;
 
-            // TomFileManager._deserializeObject kullan (tape mask, image, table gibi nesneleri restore eder)
             const tomFM = this.app.tomFileManager;
             const deserializeObj = tomFM
                 ? (obj) => tomFM._deserializeObject(obj)
-                : (obj) => {
-                    // Fallback: sadece flat points inflate et
-                    if (obj._flat && Array.isArray(obj.points)) {
-                        const inflated = [];
-                        for (let i = 0; i < obj.points.length; i += 3) {
-                            inflated.push({
-                                x: obj.points[i],
-                                y: obj.points[i + 1],
-                                pressure: obj.points[i + 2]
-                            });
-                        }
-                        obj.points = inflated;
-                        delete obj._flat;
-                    }
-                    return Promise.resolve(obj);
-                };
+                : (obj) => Promise.resolve(obj);
 
             if (pages) {
+                console.log(`[Dashboard] ${pages.length} pages found in save file.`);
                 pages = await Promise.all(pages.map(async page => {
                     page.objects = await Promise.all((page.objects || []).map(obj => deserializeObj(obj)));
                     return page;
@@ -1435,18 +1475,30 @@ class Dashboard {
                     this.app.pageManager.pages = pages;
                     this.app.pageManager.renderPageList();
                     this.app.pageManager.switchPage(0, true, false);
-                    // Re-generate thumbnails since we don't save them anymore
-                    setTimeout(() => this.app.pageManager.updateCurrentPageThumbnail(), 500);
                 }
-            } else {
-                this.app.state.objects = await Promise.all((objects || []).map(obj => deserializeObj(obj)));
+            } else if (objects) {
+                console.log(`[Dashboard] Legacy objects found in save file.`);
+                const deserializedObjects = await Promise.all((objects || []).map(obj => deserializeObj(obj)));
+                this.app.state.objects = deserializedObjects;
+                if (this.app.pageManager) {
+                    this.app.pageManager.pages = [{
+                        id: Date.now(),
+                        name: 'Sayfa 1',
+                        objects: Utils.deepClone(this.app.state.objects),
+                        backgroundColor: 'white',
+                        backgroundPattern: 'none',
+                        thumbnail: null
+                    }];
+                    this.app.pageManager.currentPageIndex = 0;
+                    this.app.pageManager.renderPageList();
+                }
             }
         } else {
-            // New board or no saved content
-            this.app.state.objects = [];
+            console.log('[Dashboard] No saved content found, creating fresh board.');
+            // Fresh board
             if (this.app.pageManager) {
-                // If it was a PDF, pages might have been created by PDFManager.loadPDF
-                if (this.app.pageManager.pages.length === 0) {
+                const isPdf = this.app.pdfManager && this.app.pdfManager.isLoaded;
+                if (!isPdf) {
                     this.app.pageManager.pages = [{
                         id: Date.now(),
                         name: 'Sayfa 1',
@@ -1455,10 +1507,16 @@ class Dashboard {
                         backgroundPattern: 'none',
                         thumbnail: null
                     }];
+                    this.app.pageManager.currentPageIndex = 0;
                     this.app.pageManager.renderPageList();
-                    // Pass false for shouldSave because it's a new board
                     this.app.pageManager.switchPage(0, true, false);
                 }
+            }
+            
+            // APPLY TEMPLATE ATOMICALLY IF REQUESTED
+            if (templateId && this.app.templateManager) {
+                console.log(`[Dashboard] Applying template ${templateId} to new board.`);
+                await this.app.templateManager.applyTemplate(templateId);
             }
         }
 
@@ -1467,7 +1525,8 @@ class Dashboard {
     }
 
     async saveCurrentBoard(force = false) {
-        if (!this.currentBoardId) return;
+        const boardId = this.currentBoardId;
+        if (!boardId) return;
 
         // Clear existing timeout
         if (this._saveTimeout) {
@@ -1481,51 +1540,81 @@ class Dashboard {
                 this.app.pageManager.saveCurrentPageState();
             }
 
-            // Generate preview (thumbnail)
-            let preview = null;
-            try {
-                preview = this.app.canvas.toDataURL('image/webp', 0.5);
-            } catch (error) {
-                console.warn('Could not generate preview due to canvas tainting:', error);
-            }
-
-            // Update board meta
-            const boardIndex = this.boards.findIndex(b => b.id === this.currentBoardId);
+            // 2. Update board meta (Throttled)
+            const boardIndex = this.boards.findIndex(b => b.id === boardId);
             if (boardIndex !== -1) {
-                this.boards[boardIndex].lastModified = Date.now();
-                if (preview) {
-                    this.boards[boardIndex].preview = preview;
+                const board = this.boards[boardIndex];
+                const now = Date.now();
+                
+                // Only generate preview if forced or 60s passed since last preview
+                let preview = null;
+                const shouldUpdatePreview = force || !board._lastPreviewTime || (now - board._lastPreviewTime > 60000);
+                
+                if (shouldUpdatePreview) {
+                    try {
+                        preview = this.app.canvas.toDataURL('image/webp', 0.4); // Lower quality (0.4) for faster generation
+                        board.preview = preview;
+                        board._lastPreviewTime = now;
+                    } catch (error) {
+                        console.warn('Could not generate preview:', error);
+                    }
                 }
-                this.boards[boardIndex].objectCount = this.app.state.objects.length;
-                await this.saveDataAsync('wb_boards', this.boards);
+
+                board.lastModified = now;
+                board.objectCount = (this.app.state.objects || []).length;
+                
+                // Only save wb_boards (heavy file) if forced or 30s passed since last meta save
+                const shouldSaveMeta = force || !board._lastMetaSaveTime || (now - board._lastMetaSaveTime > 30000);
+                if (shouldSaveMeta) {
+                    board._lastMetaSaveTime = now;
+                    await this.saveDataAsync('wb_boards', this.boards);
+                }
             }
 
             // Serializer: TomFileManager varsa kullan, yoksa basit deep clone
             const tomFM = this.app.tomFileManager;
-            const serializeObj = tomFM
-                ? (obj) => tomFM._serializeObject(obj)
-                : (obj) => {
-                    const o = Object.assign({}, obj);
-                    // Round general coordinates to high precision (5 decimals)
+            const serializeObj = (obj) => {
+                if (!obj) return null;
+                
+                let o;
+                if (tomFM) {
+                    o = tomFM._serializeObject(obj);
+                } else {
+                    o = Object.assign({}, obj);
+                    
+                    // Coordinates rounding
                     if (o.x !== undefined) o.x = Math.round(o.x * 100000) / 100000;
                     if (o.y !== undefined) o.y = Math.round(o.y * 100000) / 100000;
                     if (o.width !== undefined) o.width = Math.round(o.width * 100000) / 100000;
                     if (o.height !== undefined) o.height = Math.round(o.height * 100000) / 100000;
 
-                    // Points: Save EVERYTHING without simplification or heavy rounding
+                    // Fast point serialization
                     if (o.points && Array.isArray(o.points) && !o._flat) {
-                        const flat = [];
-                        for (const p of o.points) {
-                            // High precision for pen strokes to maintain Chaikin smoothing
-                            flat.push(Math.round(p.x * 100000) / 100000);
-                            flat.push(Math.round(p.y * 100000) / 100000);
-                            flat.push(p.pressure !== undefined ? (Math.round(p.pressure * 100000) / 100000) : 0.5);
+                        const flat = new Float32Array(o.points.length * 3);
+                        for (let i = 0; i < o.points.length; i++) {
+                            const p = o.points[i];
+                            flat[i * 3] = p.x;
+                            flat[i * 3 + 1] = p.y;
+                            flat[i * 3 + 2] = p.pressure !== undefined ? p.pressure : 0.5;
                         }
-                        o.points = flat;
+                        o.points = Array.from(flat); // Convert back for JSON storage
                         o._flat = true;
                     }
-                    return o;
-                };
+                }
+
+                // IMPORTANT: Strip away ANY non-serializable garbage that tools might have attached
+                for (const key in o) {
+                    const val = o[key];
+                    if (val === undefined || typeof val === 'function' || val instanceof Node) {
+                        delete o[key];
+                    } else if (key.startsWith('_') && key !== '_flat') {
+                        // Skip internal caches but keep _flat marker
+                        delete o[key];
+                    }
+                }
+                
+                return o;
+            };
 
             const optimizedPages = this.app.pageManager ? this.app.pageManager.pages.map(page => {
                 const optimizedPage = Object.assign({}, page);
@@ -1540,8 +1629,8 @@ class Dashboard {
                 objects: optimizedPages ? null : (this.app.state.objects || []).map(obj => serializeObj(obj))
             };
 
-            await this.saveDataAsync(`wb_content_${this.currentBoardId}`, content);
-            console.log(`[Autosave] Board ${this.currentBoardId} saved ${force ? '(FORCED)' : '(DEBOUNCED)'}`);
+            await this.saveDataAsync(`wb_content_${boardId}`, content);
+            console.log(`[Autosave] Board ${boardId} saved ${force ? '(FORCED)' : '(DEBOUNCED)'}`);
         };
 
         if (force) {
@@ -1574,7 +1663,11 @@ class Dashboard {
     }
 
     async showDashboard() {
-        this.saveCurrentBoard(true); // Always force save when going back
+        try {
+            await this.saveCurrentBoard(true); // Always force save when going back
+        } catch (error) {
+            console.error('[Dashboard] Background save failed, but proceeding to dashboard:', error);
+        }
 
         // Keep tabs open when returning to dashboard
         // Users can close tabs manually if needed
@@ -2407,13 +2500,9 @@ class Dashboard {
         // Close template gallery
         this.closeTemplateGallery();
 
-        // Load the board (now async)
-        await this.loadBoard(id);
-
-        // Apply template immediately after board is loaded
-        if (this.app.templateManager) {
-            this.app.templateManager.applyTemplate(templateId);
-        }
+        // Load the board with templateId passed in
+        // Await this to ensure the board is fully initialized before continuing
+        await this.loadBoard(id, templateId);
     }
     setupBulkActions() {
         this.bulkToolbar = document.getElementById('bulkActionsToolbar');

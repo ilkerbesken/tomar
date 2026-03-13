@@ -25,12 +25,12 @@
         {
             "action": "/",
             "accept": {
-                "application/octet-stream": [".tom"]
+                "application/x-tomar": [".tom"]
             },
             "icons": [
                 {
-                    "src": "assets/favicon/favicon.svg",
-                    "sizes": "192x192",
+                    "src": "assets/icons/dot-tom.svg",
+                    "sizes": "any",
                     "type": "image/svg+xml"
                 }
             ],

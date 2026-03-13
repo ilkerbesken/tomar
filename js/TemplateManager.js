@@ -72,16 +72,19 @@ class TemplateManager {
     /**
      * Şablonu canvas'a uygular
      */
-    applyTemplate(templateId) {
+    async applyTemplate(templateId) {
         const template = this.templates.find(t => t.id === templateId);
         if (!template) {
             console.error('Şablon bulunamadı:', templateId);
             return;
         }
 
-        // Şablon nesnelerini ekle ve normalize et
+        // Şablon nesnelerini topla ve en başa (arka plana) ekle
+        const templateObjectsToApply = [];
+
         template.objects.forEach(obj => {
-            const normalizedObj = { ...obj };
+            const normalizedObj = Utils.deepClone(obj);
+            normalizedObj.persistent = true; // Mark as part of template
 
             // 1. Renk ve Dolgu Normalizasyonu
             if (normalizedObj.filled && !normalizedObj.fillColor) {
@@ -125,13 +128,20 @@ class TemplateManager {
             if (normalizedObj.lineStyle === undefined) normalizedObj.lineStyle = 'solid';
 
             // Benzersiz ID oluştur
-            normalizedObj.id = Date.now() + Math.random();
+            normalizedObj.id = 'tpl_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 
-            this.app.state.objects.push(normalizedObj);
+            templateObjectsToApply.push(normalizedObj);
         });
+
+        // En başa ekle (arka plan olarak)
+        this.app.state.objects.splice(0, 0, ...templateObjectsToApply);
 
         // If pageManager exists, save to ensure it's synced with the board data
         if (this.app.pageManager) {
+            if (this.app.pageManager.currentPageIndex < 0) {
+                console.warn('[TemplateManager] PageManager index -1 iken şablon uygulanıyor, index 0 yapılıyor.');
+                this.app.pageManager.currentPageIndex = 0;
+            }
             this.app.pageManager.saveCurrentPageState();
         }
 
@@ -141,6 +151,11 @@ class TemplateManager {
 
         // Geçmişe kaydet
         this.app.saveHistory();
+
+        // Persist immediately after applying template
+        if (window.dashboard) {
+            await window.dashboard.saveCurrentBoard(true);
+        }
 
         console.log(`Şablon uygulandı: ${template.name}`);
     }

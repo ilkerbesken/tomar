@@ -191,21 +191,37 @@ const Utils = {
         return (ua >= 0 && ua <= 1) && (ub >= 0 && ub <= 1);
     },
     // Deep clone objects whilst preserving Canvas/Image references
-    deepClone(obj) {
+    deepClone(obj, seen = new WeakMap()) {
         if (obj === null || typeof obj !== 'object') return obj;
 
-        if (obj instanceof HTMLCanvasElement || obj instanceof HTMLImageElement) {
-            return obj; // Maintain reference
+        // IndexedDB compatibility: Never clone DOM elements, maintain Ref if needed elsewhere
+        // but for deep cloning state, we usually want to avoid these if possible
+        if (obj instanceof HTMLCanvasElement || obj instanceof HTMLImageElement || obj instanceof Node) {
+            return obj; 
+        }
+
+        // Handle circular references
+        if (seen.has(obj)) {
+            return seen.get(obj);
         }
 
         if (Array.isArray(obj)) {
-            return obj.map(item => this.deepClone(item));
+            const arrClone = [];
+            seen.set(obj, arrClone);
+            for (let i = 0; i < obj.length; i++) {
+                arrClone[i] = this.deepClone(obj[i], seen);
+            }
+            return arrClone;
         }
 
         const clonedObj = {};
+        seen.set(obj, clonedObj);
         for (const key in obj) {
             if (Object.prototype.hasOwnProperty.call(obj, key)) {
-                clonedObj[key] = this.deepClone(obj[key]);
+                const val = obj[key];
+                // Skip functions and other non-clonable bits
+                if (typeof val === 'function') continue;
+                clonedObj[key] = this.deepClone(val, seen);
             }
         }
         return clonedObj;

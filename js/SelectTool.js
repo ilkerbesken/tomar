@@ -1587,6 +1587,13 @@ class SelectTool {
         const targetElement = state.objects[minIdx - 1];
         const selectedObjs = selectedIndices.map(idx => state.objects[idx]);
 
+        // Background (persistent) nesneleri koru
+        const hasNonPersistent = selectedObjs.some(obj => !obj.persistent);
+        if (hasNonPersistent && targetElement.persistent) {
+            // Persistent olmayan bir nesneyi persistent bir nesnenin arkasına atamayız
+            return false;
+        }
+
         // Seçili nesneleri çıkar
         for (let i = selectedIndices.length - 1; i >= 0; i--) {
             state.objects.splice(selectedIndices[i], 1);
@@ -1615,13 +1622,28 @@ class SelectTool {
             state.objects.splice(selectedIndices[i], 1);
         }
 
-        // En başa ekle
-        state.objects.unshift(...selectedObjs);
+        // Background (persistent) nesneleri koru.
+        // Eğer seçili nesneler arasında persistent olmayan varsa, 
+        // onları persistent olanların arkasına geçirmemeliyiz.
+        let insertionIndex = 0;
+        const hasNonPersistent = selectedObjs.some(obj => !obj.persistent);
+        
+        if (hasNonPersistent) {
+            // Son persistent nesnenin indeksini bul
+            for (let i = 0; i < state.objects.length; i++) {
+                if (state.objects[i].persistent) {
+                    insertionIndex = i + 1;
+                }
+            }
+        }
+
+        // Belirlenen indekse (en başa veya son persistent nesneden sonraya) ekle
+        state.objects.splice(insertionIndex, 0, ...selectedObjs);
 
         // Yeni indeksleri seç
         this.selectedObjects = [];
         for (let i = 0; i < selectedObjs.length; i++) {
-            this.selectedObjects.push(i);
+            this.selectedObjects.push(insertionIndex + i);
         }
         return true;
     }

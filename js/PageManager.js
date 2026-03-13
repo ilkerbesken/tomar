@@ -2,7 +2,7 @@ class PageManager {
     constructor(app) {
         this.app = app;
         this.pages = [];
-        this.currentPageIndex = 0;
+        this.currentPageIndex = -1;
         this.sidebar = document.getElementById('pageSidebar');
         this.pageListContainer = document.getElementById('pageList');
         this.addPageBtn = document.getElementById('btnAddPage');
@@ -16,6 +16,15 @@ class PageManager {
         this.pageGap = 100; // Sayfalar arası boşluk
 
         this.init();
+    }
+
+    /**
+     * Tüm sayfaları temizle ve başlangıç durumuna dön
+     */
+    clear() {
+        this.pages = [];
+        this.currentPageIndex = -1;
+        this.app.state.objects = [];
     }
 
     getPageHeight() {
@@ -183,6 +192,8 @@ class PageManager {
             if (this.app.canvasSettings.loadSettingsToPanel) {
                 this.app.canvasSettings.loadSettingsToPanel();
             }
+            // Gerçekten uygula (Eksik olan buydu!)
+            this.app.canvasSettings.applySettings(this.app.canvas, this.app.ctx);
         }
 
         // Eğer kaydırma isteniyorsa (Sidebar tıklaması veya navigasyon butonları)
@@ -203,7 +214,7 @@ class PageManager {
         this.renderPageList();
     }
 
-    saveCurrentPageState() {
+    saveCurrentPageState(force = false) {
         if (this.currentPageIndex >= 0 && this.currentPageIndex < this.pages.length) {
             const page = this.pages[this.currentPageIndex];
             page.objects = Utils.deepClone(this.app.state.objects);
@@ -211,12 +222,24 @@ class PageManager {
                 page.backgroundColor = this.app.canvasSettings.settings.backgroundColor;
                 page.backgroundPattern = this.app.canvasSettings.settings.pattern;
             }
-            this.updateCurrentPageThumbnail();
+            
+            // Only update thumbnail if forced or enough time has passed (30s)
+            // This prevents lag during heavy drawing/autosaving
+            const now = Date.now();
+            const shouldUpdateThumb = force || !page._lastThumbTime || (now - page._lastThumbTime > 30000);
+            
+            if (shouldUpdateThumb) {
+                this.updateCurrentPageThumbnail(force);
+            }
         }
     }
 
-    updateCurrentPageThumbnail() {
+    updateCurrentPageThumbnail(force = false) {
         if (!this.app.canvas) return;
+        
+        // If not forced, only update if the sidebar is actually visible to save CPU
+        const sidebarVisible = this.sidebar && !this.sidebar.classList.contains('collapsed');
+        if (!force && !sidebarVisible) return;
 
         // Küçük bir küçük resim oluştur
         const tempCanvas = document.createElement('canvas');
@@ -250,12 +273,16 @@ class PageManager {
         ctx.restore();
 
         try {
-            page.thumbnail = tempCanvas.toDataURL('image/png', 0.5);
+            page.thumbnail = tempCanvas.toDataURL('image/png', 0.4); // Lower quality for thumbnails
+            page._lastThumbTime = Date.now();
         } catch (e) {
             console.warn("Could not generate thumbnail due to security restrictions (tainted canvas).", e);
             page.thumbnail = null; // Fallback
         }
-        this.renderPageList();
+        
+        if (sidebarVisible || force) {
+            this.renderPageList();
+        }
     }
 
     deletePage(index, event) {

@@ -559,7 +559,7 @@ class CloudStorageManager {
         const tomBytes = await this._contentToTom(content, board.id);
 
         const appProperties = { boardId: board.id, type: 'board' };
-        return await this._uploadRawToDrive(fileName, tomBytes, 'application/octet-stream', targetFolderId, existingFileId, appProperties);
+        return await this._uploadRawToDrive(fileName, tomBytes, 'application/x-tomar', targetFolderId, existingFileId, appProperties);
     }
 
     /**

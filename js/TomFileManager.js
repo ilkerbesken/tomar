@@ -113,7 +113,7 @@ class TomFileManager {
             try {
                 const fileHandle = await window.showSaveFilePicker({
                     suggestedName: `${safeName}.tom`,
-                    types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/octet-stream': ['.tom'] } }]
+                    types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/x-tomar': ['.tom'] } }]
                 });
                 const writable = await fileHandle.createWritable();
                 await writable.write(compressed);
@@ -178,7 +178,7 @@ class TomFileManager {
             try {
                 const fileHandle = await window.showSaveFilePicker({
                     suggestedName: `${safeName}.tom`,
-                    types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/octet-stream': ['.tom'] } }]
+                    types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/x-tomar': ['.tom'] } }]
                 });
                 const writable = await fileHandle.createWritable();
                 await writable.write(compressed);
@@ -210,7 +210,7 @@ class TomFileManager {
         if (window.showOpenFilePicker) {
             try {
                 const [fileHandle] = await window.showOpenFilePicker({
-                    types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/octet-stream': ['.tom'] } }],
+                    types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/x-tomar': ['.tom'] } }],
                     multiple: false
                 });
                 const file = await fileHandle.getFile();

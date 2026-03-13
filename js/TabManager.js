@@ -44,17 +44,17 @@ class TabManager {
     /**
      * Open a board as a new tab
      */
-    async openBoard(boardId, boardTitle) {
+    async openBoard(boardId, boardTitle, templateId = null) {
         const existingTab = this.tabs.find(t => t.boardId === boardId);
 
         if (existingTab) {
-            await this.switchToBoard(boardId);
+            await this.switchToBoard(boardId, templateId);
         } else {
             this.tabs.push({
                 boardId: boardId,
                 title: boardTitle
             });
-            await this.switchToBoard(boardId);
+            await this.switchToBoard(boardId, templateId);
         }
 
         this.renderTabs();
@@ -63,13 +63,17 @@ class TabManager {
     /**
      * Switch to a specific board tab
      */
-    async switchToBoard(boardId) {
+    async switchToBoard(boardId, templateId = null) {
         if (this.activeBoardId === boardId) return;
 
         // Save current board
         if (this.activeBoardId && window.dashboard) {
             window.dashboard.currentBoardId = this.activeBoardId;
-            window.dashboard.saveCurrentBoard();
+            try {
+                await window.dashboard.saveCurrentBoard(true); // Force save before switching
+            } catch (e) {
+                console.error('[TabManager] Save failed during switch:', e);
+            }
         }
 
         this.activeBoardId = boardId;
@@ -83,7 +87,7 @@ class TabManager {
         // Load content
         if (window.dashboard) {
             window.dashboard.currentBoardId = boardId;
-            await window.dashboard.loadBoardContent(boardId);
+            await window.dashboard.loadBoardContent(boardId, templateId);
         }
 
         this.tabDropdown.classList.remove('show');
@@ -114,7 +118,11 @@ class TabManager {
         if (tabIndex === -1) return;
 
         if (this.activeBoardId === boardId && window.dashboard) {
-            window.dashboard.saveCurrentBoard();
+            try {
+                await window.dashboard.saveCurrentBoard(true);
+            } catch (e) {
+                console.error('[TabManager] Save failed during close:', e);
+            }
         }
 
         this.tabs.splice(tabIndex, 1);
@@ -144,9 +152,13 @@ class TabManager {
     /**
      * Clear all tabs
      */
-    clearAllTabs() {
+    async clearAllTabs() {
         if (this.activeBoardId && window.dashboard) {
-            window.dashboard.saveCurrentBoard();
+            try {
+                await window.dashboard.saveCurrentBoard(true);
+            } catch (e) {
+                console.error('[TabManager] Save failed during clear all:', e);
+            }
         }
         this.tabs = [];
         this.activeBoardId = null;
