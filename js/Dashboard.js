@@ -180,6 +180,8 @@ class Dashboard {
             this.tomInput = document.getElementById('tomInput');
 
             const toggleImportModal = (show) => {
+                if (!this.importModal) return;
+                console.log('toggleImportModal:', show);
                 if (show) {
                     this.importModal.classList.add('show');
                 } else {
@@ -188,18 +190,34 @@ class Dashboard {
             };
 
             if (this.btnImport) {
-                this.btnImport.onclick = () => toggleImportModal(true);
+                this.btnImport.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleImportModal(true);
+                };
             }
             if (btnImportMobile) {
-                btnImportMobile.onclick = () => toggleImportModal(true);
+                btnImportMobile.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleImportModal(true);
+                };
             }
             if (btnCloseImportModal) {
-                btnCloseImportModal.onclick = () => toggleImportModal(false);
+                btnCloseImportModal.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleImportModal(false);
+                };
             }
             
             // Close modal when clicking outside
             this.importModal?.addEventListener('click', (e) => {
-                if (e.target === this.importModal) toggleImportModal(false);
+                if (e.target === this.importModal) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleImportModal(false);
+                }
             });
 
             if (btnModalUploadPDF) {
