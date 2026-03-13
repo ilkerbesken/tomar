@@ -1,10 +1,11 @@
-const CACHE_NAME = 'tomar-v1';
+const CACHE_NAME = 'tomar-v2';
 const ASSETS_TO_CACHE = [
     './',
     './index.html',
     './style.css',
     './css/template-gallery.css',
-    './assets/favicon/favicon.svg'
+    './assets/favicon/favicon.svg',
+    './assets/icons/dot-tom.svg'
 ];
 
 // Install Event
