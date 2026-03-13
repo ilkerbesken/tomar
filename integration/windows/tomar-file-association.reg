@@ -1,0 +1,16 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CLASSES_ROOT\.tom]
+@="Tomar.Note"
+"Content Type"="application/x-tomar"
+"PerceivedType"="document"
+
+[HKEY_CLASSES_ROOT\Tomar.Note]
+@="Tomar Not Dosyası"
+"FriendlyTypeName"="Tomar Not Dosyası"
+
+[HKEY_CLASSES_ROOT\Tomar.Note\DefaultIcon]
+@="C:\\Path\\To\\Your\\App\\assets\\icons\\dot-tom.ico"
+
+[HKEY_CLASSES_ROOT\Tomar.Note\shell\open\command]
+@="\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --app=\"https://your-domain.com/?file=%1\""

@@ -23,7 +23,7 @@
     ],
     "file_handlers": [
         {
-            "action": "/",
+            "action": "./",
             "accept": {
                 "application/x-tomar": [".tom"]
             },

@@ -242,6 +242,19 @@ class TomarApp {
         try {
             launchQueue.setConsumer(async (launchParams) => {
                 if (!launchParams.files || launchParams.files.length === 0) return;
+                
+                // Dashboard hazır olana kadar bekle (Race condition engellemek için)
+                let attempts = 0;
+                while (!window.dashboard && attempts < 100) {
+                    await new Promise(r => setTimeout(r, 50));
+                    attempts++;
+                }
+
+                if (!window.dashboard) {
+                    console.error('[LaunchQueue] Dashboard zamanında yüklenemedi.');
+                    return;
+                }
+
                 const fileHandle = launchParams.files[0];
                 try {
                     const file = await fileHandle.getFile();
@@ -253,8 +266,7 @@ class TomarApp {
                 }
             });
         } catch (e) {
-            // launchQueue API desteklenmiyor, sessizce geç
-            console.debug('[LaunchQueue] API desteklenmiyor:', e);
+            console.debug('[LaunchQueue] API desteklenmiyor veya kurulumda hata oluştu:', e);
         }
     }
 
