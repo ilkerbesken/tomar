@@ -1506,15 +1506,15 @@ class Dashboard {
                 ? (obj) => tomFM._serializeObject(obj)
                 : (obj) => {
                     const o = Object.assign({}, obj);
-                    if (o.x !== undefined) o.x = Math.round(o.x * 10) / 10;
-                    if (o.y !== undefined) o.y = Math.round(o.y * 10) / 10;
+                    if (o.x !== undefined) o.x = Math.round(o.x * 1000) / 1000;
+                    if (o.y !== undefined) o.y = Math.round(o.y * 1000) / 1000;
                     if (o.points && Array.isArray(o.points) && !o._flat) {
-                        const simplified = Utils.simplifyPoints(o.points, 0.5);
+                        const simplified = Utils.simplifyPoints(o.points, 0.05); // High precision
                         const flat = [];
                         for (const p of simplified) {
-                            flat.push(Math.round(p.x * 10) / 10);
-                            flat.push(Math.round(p.y * 10) / 10);
-                            flat.push(p.pressure ? (Math.round(p.pressure * 10) / 10) : 0.5);
+                            flat.push(Math.round(p.x * 1000) / 1000);
+                            flat.push(Math.round(p.y * 1000) / 1000);
+                            flat.push(p.pressure !== undefined ? (Math.round(p.pressure * 1000) / 1000) : 0.5);
                         }
                         o.points = flat;
                         o._flat = true;

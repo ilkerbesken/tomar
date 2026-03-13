@@ -1,6 +1,6 @@
 # 🎨 Tomar - Professional Digital Whiteboard & Note-Taking Application
 
-Tomar JS, modern web teknolojileri (HTML5, CSS3, ES6+) kullanılarak geliştirilmiş, düşük gecikmeli (low-latency) ve yüksek performanslı bir dijital beyaz tahta uygulamasıdır. Hem yaratıcı çizim süreçleri hem de profesyonel not alma ihtiyaçları için tablet kalitesinde bir deneyim sunar.
+Tomar, modern web teknolojileri (HTML5, CSS3, ES6+) kullanılarak geliştirilmiş, düşük gecikmeli (low-latency) ve yüksek performanslı bir dijital beyaz tahta uygulamasıdır. Hem yaratıcı çizim süreçleri hem de profesyonel not alma ihtiyaçları için tablet kalitesinde bir deneyim sunar.
 
 ---
 
@@ -58,7 +58,7 @@ Proje, sürdürülebilirlik ve performans için modüler bir mimari üzerine kur
 
 ## 🚀 Başlarken
 
-Tomar JS, herhangi bir derleme (build) adımı gerektirmez. Vanilla JS yapısı sayesinde doğrudan çalıştırılabilir:
+Tomar, herhangi bir derleme (build) adımı gerektirmez. Vanilla JS yapısı sayesinde doğrudan çalıştırılabilir:
 
 1. Proje dizininde bir yerel sunucu başlatın:
    ```bash

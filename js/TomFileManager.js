@@ -374,12 +374,12 @@ class TomFileManager {
 
         // ── Kalem / Vurgulayıcı: points flat array ──
         if ((o.type === 'pen' || o.type === 'highlighter') && Array.isArray(o.points) && !o._flat) {
-            const simplified = Utils.simplifyPoints(o.points, 0.5);
+            const simplified = Utils.simplifyPoints(o.points, 0.05); // High precision
             const flat = [];
             for (const p of simplified) {
-                flat.push(Math.round(p.x * 10) / 10);
-                flat.push(Math.round(p.y * 10) / 10);
-                flat.push(p.pressure !== undefined ? (Math.round(p.pressure * 100) / 100) : 0.5);
+                flat.push(Math.round(p.x * 1000) / 1000);
+                flat.push(Math.round(p.y * 1000) / 1000);
+                flat.push(p.pressure !== undefined ? (Math.round(p.pressure * 1000) / 1000) : 0.5);
             }
             o.points = flat;
             o._flat = true;
@@ -393,10 +393,11 @@ class TomFileManager {
         }
 
         // ── Şekiller: koordinat hassasiyeti ──
-        if (o.x !== undefined) o.x = Math.round(o.x * 10) / 10;
-        if (o.y !== undefined) o.y = Math.round(o.y * 10) / 10;
-        if (o.width !== undefined) o.width = Math.round(o.width * 10) / 10;
-        if (o.height !== undefined) o.height = Math.round(o.height * 10) / 10;
+        if (o.x !== undefined) o.x = Math.round(o.x * 1000) / 1000;
+        if (o.y !== undefined) o.y = Math.round(o.y * 1000) / 1000;
+        if (o.width !== undefined) o.width = Math.round(o.width * 1000) / 1000;
+        if (o.height !== undefined) o.height = Math.round(o.height * 1000) / 1000;
+        if (o.rotation !== undefined) o.rotation = Math.round(o.rotation * 100) / 100;
 
         // ── Bant (Tape): points + customMask/customImage ──
         if (o.type === 'tape') {
@@ -404,8 +405,8 @@ class TomFileManager {
             if (Array.isArray(o.points) && !o._flat) {
                 const flat = [];
                 for (const p of o.points) {
-                    flat.push(Math.round(p.x * 10) / 10);
-                    flat.push(Math.round(p.y * 10) / 10);
+                    flat.push(Math.round(p.x * 1000) / 1000);
+                    flat.push(Math.round(p.y * 1000) / 1000);
                 }
                 o.points = flat;
                 o._flat = true;
@@ -479,7 +480,11 @@ class TomFileManager {
 
     _roundPoint(p) {
         if (!p) return p;
-        return { x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 };
+        return {
+            x: Math.round(p.x * 1000) / 1000,
+            y: Math.round(p.y * 1000) / 1000,
+            pressure: p.pressure !== undefined ? (Math.round(p.pressure * 1000) / 1000) : 0.5
+        };
     }
 
     // ─────────────────────────────────────────────
