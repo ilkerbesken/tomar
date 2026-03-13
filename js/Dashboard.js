@@ -49,6 +49,7 @@ class Dashboard {
         this.customCovers = []; // Will load in initAsync
 
         this.initAsync();
+        this.setupAutosaveFlush();
     }
 
     async initAsync() {
@@ -1465,85 +1466,110 @@ class Dashboard {
         this.app.render();
     }
 
-    async saveCurrentBoard() {
+    async saveCurrentBoard(force = false) {
         if (!this.currentBoardId) return;
 
-        // Debounce actual saving to prevent file system thrashing
-        if (this._saveTimeout) clearTimeout(this._saveTimeout);
+        // Clear existing timeout
+        if (this._saveTimeout) {
+            clearTimeout(this._saveTimeout);
+            this._saveTimeout = null;
+        }
 
-        return new Promise((resolve) => {
-            this._saveTimeout = setTimeout(async () => {
-                // 1. Sync current page state before saving everything
-                if (this.app.pageManager) {
-                    this.app.pageManager.saveCurrentPageState();
+        const runSave = async () => {
+            // 1. Sync current page state before saving everything
+            if (this.app.pageManager) {
+                this.app.pageManager.saveCurrentPageState();
+            }
+
+            // Generate preview (thumbnail)
+            let preview = null;
+            try {
+                preview = this.app.canvas.toDataURL('image/webp', 0.5);
+            } catch (error) {
+                console.warn('Could not generate preview due to canvas tainting:', error);
+            }
+
+            // Update board meta
+            const boardIndex = this.boards.findIndex(b => b.id === this.currentBoardId);
+            if (boardIndex !== -1) {
+                this.boards[boardIndex].lastModified = Date.now();
+                if (preview) {
+                    this.boards[boardIndex].preview = preview;
                 }
+                this.boards[boardIndex].objectCount = this.app.state.objects.length;
+                await this.saveDataAsync('wb_boards', this.boards);
+            }
 
-                // Generate preview (thumbnail)
-                let preview = null;
-                try {
-                    preview = this.app.canvas.toDataURL('image/webp', 0.5);
-                } catch (error) {
-                    console.warn('Could not generate preview due to canvas tainting:', error);
-                }
-
-                // Update board meta
-                const boardIndex = this.boards.findIndex(b => b.id === this.currentBoardId);
-                if (boardIndex !== -1) {
-                    this.boards[boardIndex].lastModified = Date.now();
-                    if (preview) {
-                        this.boards[boardIndex].preview = preview;
-                    }
-                    this.boards[boardIndex].objectCount = this.app.state.objects.length;
-                    await this.saveDataAsync('wb_boards', this.boards);
-                }
-
-                // Save content — TomFileManager._serializeObject kullanarak
-                // tape/canvas/image gibi DOM objelerini doğru serialize eder
-                if (this.app.pageManager) this.app.pageManager.saveCurrentPageState();
-
-                // Serializer: TomFileManager varsa kullan, yoksa basit deep clone
-                const tomFM = this.app.tomFileManager;
-                const serializeObj = tomFM
-                    ? (obj) => tomFM._serializeObject(obj)
-                    : (obj) => {
-                        const o = Object.assign({}, obj);
-                        if (o.x !== undefined) o.x = Math.round(o.x * 10) / 10;
-                        if (o.y !== undefined) o.y = Math.round(o.y * 10) / 10;
-                        if (o.points && Array.isArray(o.points) && !o._flat) {
-                            const simplified = Utils.simplifyPoints(o.points, 0.5);
-                            const flat = [];
-                            for (const p of simplified) {
-                                flat.push(Math.round(p.x * 10) / 10);
-                                flat.push(Math.round(p.y * 10) / 10);
-                                flat.push(p.pressure ? (Math.round(p.pressure * 10) / 10) : 0.5);
-                            }
-                            o.points = flat;
-                            o._flat = true;
+            // Serializer: TomFileManager varsa kullan, yoksa basit deep clone
+            const tomFM = this.app.tomFileManager;
+            const serializeObj = tomFM
+                ? (obj) => tomFM._serializeObject(obj)
+                : (obj) => {
+                    const o = Object.assign({}, obj);
+                    if (o.x !== undefined) o.x = Math.round(o.x * 10) / 10;
+                    if (o.y !== undefined) o.y = Math.round(o.y * 10) / 10;
+                    if (o.points && Array.isArray(o.points) && !o._flat) {
+                        const simplified = Utils.simplifyPoints(o.points, 0.5);
+                        const flat = [];
+                        for (const p of simplified) {
+                            flat.push(Math.round(p.x * 10) / 10);
+                            flat.push(Math.round(p.y * 10) / 10);
+                            flat.push(p.pressure ? (Math.round(p.pressure * 10) / 10) : 0.5);
                         }
-                        return o;
-                    };
-
-                const optimizedPages = this.app.pageManager ? this.app.pageManager.pages.map(page => {
-                    const optimizedPage = Object.assign({}, page);
-                    delete optimizedPage.thumbnail; // Clear huge base64 to save MBs
-                    optimizedPage.objects = (page.objects || []).map(obj => serializeObj(obj));
-                    return optimizedPage;
-                }) : null;
-
-                const content = {
-                    version: "2.1",
-                    pages: optimizedPages,
-                    objects: optimizedPages ? null : (this.app.state.objects || []).map(obj => serializeObj(obj))
+                        o.points = flat;
+                        o._flat = true;
+                    }
+                    return o;
                 };
 
-                await this.saveDataAsync(`wb_content_${this.currentBoardId}`, content);
-                resolve();
-            }, 500); // 500ms debounce
+            const optimizedPages = this.app.pageManager ? this.app.pageManager.pages.map(page => {
+                const optimizedPage = Object.assign({}, page);
+                delete optimizedPage.thumbnail; // Clear huge base64 to save MBs
+                optimizedPage.objects = (page.objects || []).map(obj => serializeObj(obj));
+                return optimizedPage;
+            }) : null;
+
+            const content = {
+                version: "2.1",
+                pages: optimizedPages,
+                objects: optimizedPages ? null : (this.app.state.objects || []).map(obj => serializeObj(obj))
+            };
+
+            await this.saveDataAsync(`wb_content_${this.currentBoardId}`, content);
+            console.log(`[Autosave] Board ${this.currentBoardId} saved ${force ? '(FORCED)' : '(DEBOUNCED)'}`);
+        };
+
+        if (force) {
+            return await runSave();
+        } else {
+            return new Promise((resolve) => {
+                this._saveTimeout = setTimeout(async () => {
+                    await runSave();
+                    resolve();
+                }, 1000); // 1s debounce feels more stable for heavy strokes
+            });
+        }
+    }
+
+    setupAutosaveFlush() {
+        // Tab kapandığında veya arka plana atıldığında bekleyen kaydı anında yap
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden' && this.currentBoardId) {
+                console.log('[Autosave] Visibility hidden, flushing save...');
+                this.saveCurrentBoard(true);
+            }
+        });
+
+        // Sayfa tamamen kapatılmadan önce (opsiyonel ama güvenli)
+        window.addEventListener('beforeunload', () => {
+            if (this.currentBoardId) {
+                this.saveCurrentBoard(true);
+            }
         });
     }
 
     async showDashboard() {
-        this.saveCurrentBoard();
+        this.saveCurrentBoard(true); // Always force save when going back
 
         // Keep tabs open when returning to dashboard
         // Users can close tabs manually if needed

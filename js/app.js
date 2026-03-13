@@ -513,6 +513,7 @@ class TomarApp {
             } else {
                 this.needsRedrawOffscreen = true;
                 this.needsRender = true;
+                window.dashboard?.saveCurrentBoard();
             }
 
             // Panel'i kapat
@@ -1468,6 +1469,7 @@ class TomarApp {
             }
 
             this.needsRedrawOffscreen = true;
+            window.dashboard?.saveCurrentBoard();
         }
 
         // Update properties sidebar if selection might have changed (e.g. drag selection finished)
@@ -1540,6 +1542,7 @@ class TomarApp {
                 selectTool.cutSelected(this.state);
                 this.needsRedrawOffscreen = true;
                 this.needsRender = true;
+                window.dashboard?.saveCurrentBoard();
                 return;
             }
 
@@ -1552,6 +1555,7 @@ class TomarApp {
                 if (duplicateResult) {
                     this.needsRedrawOffscreen = true;
                     this.needsRender = true;
+                    window.dashboard?.saveCurrentBoard();
                 }
                 return;
             }
@@ -1563,6 +1567,7 @@ class TomarApp {
                 selectTool.deleteSelected(this.state);
                 this.needsRedrawOffscreen = true;
                 this.needsRender = true;
+                window.dashboard?.saveCurrentBoard();
                 return;
             }
         }
@@ -1594,6 +1599,7 @@ class TomarApp {
                 selectTool.groupSelected(this.state);
                 this.needsRedrawOffscreen = true;
                 this.needsRender = true;
+                window.dashboard?.saveCurrentBoard();
                 return;
             }
             if (e.key.toLowerCase() === 'u') {
@@ -1602,18 +1608,21 @@ class TomarApp {
                 selectTool.ungroupSelected(this.state);
                 this.needsRedrawOffscreen = true;
                 this.needsRender = true;
+                window.dashboard?.saveCurrentBoard();
                 return;
             }
             if (e.key.toLowerCase() === 'k') {
                 e.preventDefault();
                 this.saveHistory();
                 selectTool.lockSelected(this.state);
+                window.dashboard?.saveCurrentBoard();
                 return;
             }
             if (e.key.toLowerCase() === 'j') {
                 e.preventDefault();
                 this.saveHistory();
                 selectTool.unlockSelected(this.state);
+                window.dashboard?.saveCurrentBoard();
                 return;
             }
         }
@@ -1779,6 +1788,7 @@ class TomarApp {
             }
             this.needsRedrawOffscreen = true;
             this.needsRender = true;
+            window.dashboard?.saveCurrentBoard();
         }
     }
 
@@ -1797,6 +1807,7 @@ class TomarApp {
             }
             this.needsRedrawOffscreen = true;
             this.needsRender = true;
+            window.dashboard?.saveCurrentBoard();
         }
     }
 
