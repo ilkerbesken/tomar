@@ -102,6 +102,12 @@ class TomFileManager {
         const jsonStr = JSON.stringify(content);
         const compressed = pako.gzip(jsonStr);
 
+        // Özel Başlık (Magic Bytes): "TOMAR!" + Veri
+        const header = new TextEncoder().encode('TOMAR!');
+        const finalData = new Uint8Array(header.length + compressed.length);
+        finalData.set(header);
+        finalData.set(compressed, header.length);
+
         // Dosya adı
         const boardName = boardId
             ? (dashboard.boards.find(b => b.id === boardId)?.name || 'tomar')
@@ -116,9 +122,9 @@ class TomFileManager {
                     types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/x-tomar': ['.tom'] } }]
                 });
                 const writable = await fileHandle.createWritable();
-                await writable.write(compressed);
+                await writable.write(finalData);
                 await writable.close();
-                console.log('[TomFileManager] .tom dosyası kaydedildi.');
+                console.log('[TomFileManager] .tom dosyası kaydedildi (imzalı).');
                 this._showToast('✅ .tom dosyası kaydedildi!');
                 return;
             } catch (e) {
@@ -128,7 +134,7 @@ class TomFileManager {
         }
 
         // Fallback: <a> download
-        const blob = new Blob([compressed], { type: 'application/octet-stream' });
+        const blob = new Blob([finalData], { type: 'application/x-tomar' });
         const link = document.createElement('a');
         link.download = `${safeName}.tom`;
         link.href = URL.createObjectURL(blob);
@@ -172,6 +178,13 @@ class TomFileManager {
 
         const jsonStr = JSON.stringify(content);
         const compressed = pako.gzip(jsonStr);
+        
+        // Özel Başlık (Magic Bytes)
+        const header = new TextEncoder().encode('TOMAR!');
+        const finalData = new Uint8Array(header.length + compressed.length);
+        finalData.set(header);
+        finalData.set(compressed, header.length);
+
         const safeName = (template.name || 'sablon').replace(/[^a-zA-Z0-9ğüşıöçĞÜŞİÖÇ\s\-_]/g, '').trim() || 'sablon';
 
         if (window.showSaveFilePicker) {
@@ -181,7 +194,7 @@ class TomFileManager {
                     types: [{ description: 'Tomar Notu (.tom)', accept: { 'application/x-tomar': ['.tom'] } }]
                 });
                 const writable = await fileHandle.createWritable();
-                await writable.write(compressed);
+                await writable.write(finalData);
                 await writable.close();
                 this._showToast(`✅ "${template.name}" şablonu .tom olarak kaydedildi!`);
                 return;
@@ -191,7 +204,7 @@ class TomFileManager {
             }
         }
 
-        const blob = new Blob([compressed], { type: 'application/octet-stream' });
+        const blob = new Blob([finalData], { type: 'application/x-tomar' });
         const link = document.createElement('a');
         link.download = `${safeName}.tom`;
         link.href = URL.createObjectURL(blob);
@@ -241,11 +254,18 @@ class TomFileManager {
             const uint8 = new Uint8Array(arrayBuffer);
 
             let jsonStr;
-            if (uint8[0] === 0x1f && uint8[1] === 0x8b) {
-                // Gzip sıkıştırılmış
+            // "TOMAR!" imzasını kontrol et (84, 79, 77, 65, 82, 33)
+            const isImzali = uint8[0] === 84 && uint8[1] === 79 && uint8[2] === 77 && uint8[3] === 65 && uint8[4] === 82 && uint8[5] === 33;
+
+            if (isImzali) {
+                // Başlığı atla (6 bayt) ve decompress et
+                const dataOnly = uint8.slice(6);
+                jsonStr = pako.inflate(dataOnly, { to: 'string' });
+            } else if (uint8[0] === 0x1f && uint8[1] === 0x8b) {
+                // Eski düz Gzip (geriye dönük uyumluluk)
                 jsonStr = pako.inflate(uint8, { to: 'string' });
             } else {
-                // Eski düz JSON (geriye dönük uyumluluk)
+                // Eski düz JSON
                 jsonStr = new TextDecoder().decode(uint8);
             }
 
